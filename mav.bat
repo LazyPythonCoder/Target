@@ -1,0 +1,1 @@
+mavproxy.exe --master=COM3 --baudrate=57600 --out=udp:127.0.0.1:14550 --out=udp:127.0.0.1:14551
