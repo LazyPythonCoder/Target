@@ -5,7 +5,7 @@
 local analog_in = analog:channel()
 local baud_rate = 9600
 
-if not analog_in:set_pin(15) then 
+if not analog_in:set_pin(8) then 
   gcs:send_text(0, "Invalid analog pin")
 end
 
@@ -39,5 +39,6 @@ function update()
 
   return update, 1000 
 end
+
 
 return update, 1000
