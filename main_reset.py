@@ -160,7 +160,7 @@ def relay_trigger(number_of_target:int):
                                  )
 
     # master.mav.send(command)
-    time.sleep(0.5)
+    time.sleep(1)
 
     #перевод в режим MANUAL/AUTO (0- manual, 10 - auto)
     set_mode(number_of_target, 0)
@@ -176,9 +176,75 @@ def get_telemetry():
                     mavtext = message['text']
                     print(mavtext)
 
+                    # match mavtext:
+                    #     case 'SHM1':
+                    #         if time.time() - start_time1>4:
+                    #             print(f"Мишень №1 поражена")
+                    #             start_time1 = time.time()
+                    #             time.sleep(3)
+                    #             relay_trigger(1)
+                    #
+                    #     case 'SHM2':
+                    #         if time.time() - start_time2 > 4:
+                    #             print(f"Мишень №2 поражена")
+                    #             start_time2 = time.time()
+                    #
+                    #     case 'SHM3':
+                    #         if time.time() - start_time3 > 4:
+                    #             print(f"Мишень №3 поражена")
+                    #             start_time3 = time.time()
+                    #
+                    #     case 'SHM4':
+                    #         if time.time() - start_time4 > 4:
+                    #             print(f"Мишень №4 поражена")
+                    #             start_time4 = time.time()
+                    #
+                    #     case _:
+                    #         print("Что это было?")
+
+ # Парсим данные от мишени 1-55-1
+                    res = re.findall(r'\d{1}-\d+-\d{1}', mavtext)
+                    if res:
+                        print("mavtext=", res[-1])
+                        reslast = res[-1]
+                        result = ''.join([str(x) for x in reslast])
+                        target_num, num_tar, zona = result.split("-")
+                        print("Данные",target_num, num_tar, zona)
+                        match target_num:
+                            case "1":
+                                tar1 = int(num_tar)
+                                if zona == "1":
+                                    change_color_red_head(1)
+                                if zona == "2":
+                                    change_color_red(1)
+
+                                time.sleep(3)
+
+                            case "2":
+                                tar2 = int(num_tar)
+                                if zona == "1":
+                                    change_color_red_head(2)
+                                if zona == "2":
+                                    change_color_red(2)
+
+                            case "3":
+                                tar3 = int(num_tar)
+                                if zona == "1":
+                                    change_color_red_head(3)
+                                if zona == "2":
+                                    change_color_red(3)
+
+                            case "4":
+                                tar4 = int(num_tar)
+                                if zona == "1":
+                                    change_color_red_head(4)
+                                if zona == "2":
+                                    change_color_red(4)
+
+
                     match mavtext:
                         case 'SHM1':
-                            if time.time() - start_time1>4:
+                            if time.time() - start_time1 > 4:
                                 print(f"Мишень №1 поражена")
                                 start_time1 = time.time()
                                 time.sleep(0.5)
@@ -201,43 +267,6 @@ def get_telemetry():
 
                         case _:
                             print("Что это было?")
-
- # Парсим данные от мишени 1-55-1
-                    res = re.findall(r'\d{1}-\d+-\d{1}', mavtext)
-                    if res:
-                        print("mavtext=", res[-1])
-                        reslast = res[-1]
-                        result = ''.join([str(x) for x in reslast])
-                        target_num, num_tar, zona = result.split("-")
-                        print("Данные",target_num, num_tar, zona)
-                        match target_num:
-                            case "1":
-                                tar1 = int(num_tar)
-                                if zona == "1":
-                                    change_color_red_head(1)
-                                if zona == "2":
-                                    change_color_red(1)
-
-                            case "2":
-                                tar2 = int(num_tar)
-                                if zona == "1":
-                                    change_color_red_head(2)
-                                if zona == "2":
-                                    change_color_red(2)
-
-                            case "3":
-                                tar3 = int(num_tar)
-                                if zona == "1":
-                                    change_color_red_head(3)
-                                if zona == "2":
-                                    change_color_red(3)
-
-                            case "4":
-                                tar4 = int(num_tar)
-                                if zona == "1":
-                                    change_color_red_head(4)
-                                if zona == "2":
-                                    change_color_red(4)
 
                     set_new_text_label() #Обновляем данные о поражениях
 
