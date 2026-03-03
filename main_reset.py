@@ -176,31 +176,30 @@ def get_telemetry():
                     mavtext = message['text']
                     print(mavtext)
 
-                    # match mavtext:
-                    #     case 'SHM1':
-                    #         if time.time() - start_time1>4:
-                    #             print(f"Мишень №1 поражена")
-                    #             start_time1 = time.time()
-                    #             time.sleep(3)
-                    #             relay_trigger(1)
-                    #
-                    #     case 'SHM2':
-                    #         if time.time() - start_time2 > 4:
-                    #             print(f"Мишень №2 поражена")
-                    #             start_time2 = time.time()
-                    #
-                    #     case 'SHM3':
-                    #         if time.time() - start_time3 > 4:
-                    #             print(f"Мишень №3 поражена")
-                    #             start_time3 = time.time()
-                    #
-                    #     case 'SHM4':
-                    #         if time.time() - start_time4 > 4:
-                    #             print(f"Мишень №4 поражена")
-                    #             start_time4 = time.time()
-                    #
-                    #     case _:
-                    #         print("Что это было?")
+                    match mavtext:
+                        case 'SHM1':
+                            if time.time() - start_time1>4:
+                                print(f"Мишень №1 поражена")
+                                start_time1 = time.time()
+                                relay_trigger(1)
+
+                        case 'SHM2':
+                            if time.time() - start_time2 > 4:
+                                print(f"Мишень №2 поражена")
+                                start_time2 = time.time()
+
+                        case 'SHM3':
+                            if time.time() - start_time3 > 4:
+                                print(f"Мишень №3 поражена")
+                                start_time3 = time.time()
+
+                        case 'SHM4':
+                            if time.time() - start_time4 > 4:
+                                print(f"Мишень №4 поражена")
+                                start_time4 = time.time()
+
+                        case _:
+                            print("Что это было?")
 
  # Парсим данные от мишени 1-55-1
                     res = re.findall(r'\d{1}-\d+-\d{1}', mavtext)
@@ -218,7 +217,7 @@ def get_telemetry():
                                 if zona == "2":
                                     change_color_red(1)
 
-                                time.sleep(3)
+                                time.sleep(2)
 
                             case "2":
                                 tar2 = int(num_tar)
@@ -241,32 +240,6 @@ def get_telemetry():
                                 if zona == "2":
                                     change_color_red(4)
 
-
-                    match mavtext:
-                        case 'SHM1':
-                            if time.time() - start_time1 > 4:
-                                print(f"Мишень №1 поражена")
-                                start_time1 = time.time()
-                                time.sleep(0.5)
-                                relay_trigger(1)
-
-                        case 'SHM2':
-                            if time.time() - start_time2 > 4:
-                                print(f"Мишень №2 поражена")
-                                start_time2 = time.time()
-
-                        case 'SHM3':
-                            if time.time() - start_time3 > 4:
-                                print(f"Мишень №3 поражена")
-                                start_time3 = time.time()
-
-                        case 'SHM4':
-                            if time.time() - start_time4 > 4:
-                                print(f"Мишень №4 поражена")
-                                start_time4 = time.time()
-
-                        case _:
-                            print("Что это было?")
 
                     set_new_text_label() #Обновляем данные о поражениях
 
@@ -323,4 +296,3 @@ form.resetButton1.clicked.connect(lambda: reset_target(3))
 form.resetButton1.clicked.connect(lambda: reset_target(3))
 
 app.exec()
-
