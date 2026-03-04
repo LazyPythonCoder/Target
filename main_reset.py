@@ -113,6 +113,21 @@ def change_color_green_head(number_of_button:int):
         case _:
             pass
 
+
+
+# def test():
+#     print('TEST')
+#     master.mav.command_long_send(1, master.target_component, mavutil.mavlink.MAV_CMD_DO_SET_RELAY,
+#                                  # Команда
+#                                  0,  # confirmation
+#                                  0,  # param1 (Номер реле)
+#                                  1,  # param2 (1 - ON)
+#                                  0, 0, 0, 0, 0  # Остальные параметры
+#                                  )
+
+
+
+
 def relay_trigger(number_of_target:int):
     print("TRIGGER")
     change_color_green(number_of_target)
@@ -130,6 +145,8 @@ def relay_trigger(number_of_target:int):
     #                                                param6=0,
     #                                                param7=0)
 
+
+
     master.mav.command_long_send(number_of_target, master.target_component, mavutil.mavlink.MAV_CMD_DO_SET_RELAY,  # Команда
         0,  # confirmation
         0,  # param1 (Номер реле)
@@ -138,7 +155,7 @@ def relay_trigger(number_of_target:int):
     )
 
     # master.mav.send(command)
-    time.sleep(0.1)
+    time.sleep(0.5)
     # command = dialect.MAVLink_command_long_message(number_of_target,
     #                                                target_component=master.target_component,
     #                                                command=dialect.MAV_CMD_DO_SET_RELAY,
@@ -174,14 +191,15 @@ def get_telemetry():
                 if msg.get_type() in ['STATUSTEXT']:
                     message = msg.to_dict()
                     mavtext = message['text']
-                    print(mavtext)
+                    print(f"Сообщение={mavtext}")
 
                     match mavtext:
                         case 'SHM1':
-                            if time.time() - start_time1>4:
+                            if time.time() - start_time1 > 4:
                                 print(f"Мишень №1 поражена")
                                 start_time1 = time.time()
-                                relay_trigger(1)
+                                t = threading.Timer(10.0, relay_trigger, args=[1])
+                                t.start()
 
                         case 'SHM2':
                             if time.time() - start_time2 > 4:
@@ -217,8 +235,6 @@ def get_telemetry():
                                 if zona == "2":
                                     change_color_red(1)
 
-                                time.sleep(2)
-
                             case "2":
                                 tar2 = int(num_tar)
                                 if zona == "1":
@@ -240,6 +256,32 @@ def get_telemetry():
                                 if zona == "2":
                                     change_color_red(4)
 
+
+                    # match mavtext:
+                    #     case 'SHM1':
+                    #         if time.time() - start_time1 > 4:
+                    #             print(f"Мишень №1 поражена")
+                    #             start_time1 = time.time()
+                    #             time.sleep(2)
+                    #             relay_trigger(1)
+                    #
+                    #     case 'SHM2':
+                    #         if time.time() - start_time2 > 4:
+                    #             print(f"Мишень №2 поражена")
+                    #             start_time2 = time.time()
+                    #
+                    #     case 'SHM3':
+                    #         if time.time() - start_time3 > 4:
+                    #             print(f"Мишень №3 поражена")
+                    #             start_time3 = time.time()
+                    #
+                    #     case 'SHM4':
+                    #         if time.time() - start_time4 > 4:
+                    #             print(f"Мишень №4 поражена")
+                    #             start_time4 = time.time()
+                    #
+                    #     case _:
+                    #         print("Что это было?")
 
                     set_new_text_label() #Обновляем данные о поражениях
 
@@ -290,9 +332,12 @@ form.pushButtonHead3.clicked.connect(lambda: relay_trigger(3))
 form.pushButtonHead4.clicked.connect(lambda: relay_trigger(4))
 form.pushButtonAct.clicked.connect(lambda: change_color_red(4))
 
+
 form.resetButton1.clicked.connect(lambda: reset_target(1))
 form.resetButton1.clicked.connect(lambda: reset_target(2))
 form.resetButton1.clicked.connect(lambda: reset_target(3))
 form.resetButton1.clicked.connect(lambda: reset_target(3))
 
 app.exec()
+
+
