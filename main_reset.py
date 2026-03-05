@@ -198,7 +198,7 @@ def get_telemetry():
                             if time.time() - start_time1 > 4:
                                 print(f"Мишень №1 поражена")
                                 start_time1 = time.time()
-                                t = threading.Timer(10.0, relay_trigger, args=[1])
+                                t = threading.Timer(5.0, relay_trigger, args=[1])
                                 t.start()
 
                         case 'SHM2':
@@ -339,5 +339,4 @@ form.resetButton1.clicked.connect(lambda: reset_target(3))
 form.resetButton1.clicked.connect(lambda: reset_target(3))
 
 app.exec()
-
 
