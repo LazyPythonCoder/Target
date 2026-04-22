@@ -115,19 +115,6 @@ def change_color_green_head(number_of_button:int):
 
 
 
-# def test():
-#     print('TEST')
-#     master.mav.command_long_send(1, master.target_component, mavutil.mavlink.MAV_CMD_DO_SET_RELAY,
-#                                  # Команда
-#                                  0,  # confirmation
-#                                  0,  # param1 (Номер реле)
-#                                  1,  # param2 (1 - ON)
-#                                  0, 0, 0, 0, 0  # Остальные параметры
-#                                  )
-
-
-
-
 def relay_trigger(number_of_target:int):
     print("TRIGGER")
     change_color_green(number_of_target)
