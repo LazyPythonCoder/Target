@@ -340,8 +340,9 @@ form.pushButtonAct.clicked.connect(lambda: change_color_red(4))
 
 
 form.resetButton1.clicked.connect(lambda: reset_target(1))
-form.resetButton1.clicked.connect(lambda: reset_target(2))
-form.resetButton1.clicked.connect(lambda: reset_target(3))
-form.resetButton1.clicked.connect(lambda: reset_target(3))
+form.resetButton2.clicked.connect(lambda: reset_target(2))
+form.resetButton3.clicked.connect(lambda: reset_target(3))
+form.resetButton4.clicked.connect(lambda: reset_target(4))
 
 app.exec()
+
