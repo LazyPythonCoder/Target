@@ -263,33 +263,7 @@ def get_telemetry():
                                 if zona == "2":
                                     change_color_red(4)
 
-
-                    # match mavtext:
-                    #     case 'SHM1':
-                    #         if time.time() - start_time1 > 4:
-                    #             print(f"Мишень №1 поражена")
-                    #             start_time1 = time.time()
-                    #             time.sleep(2)
-                    #             relay_trigger(1)
-                    #
-                    #     case 'SHM2':
-                    #         if time.time() - start_time2 > 4:
-                    #             print(f"Мишень №2 поражена")
-                    #             start_time2 = time.time()
-                    #
-                    #     case 'SHM3':
-                    #         if time.time() - start_time3 > 4:
-                    #             print(f"Мишень №3 поражена")
-                    #             start_time3 = time.time()
-                    #
-                    #     case 'SHM4':
-                    #         if time.time() - start_time4 > 4:
-                    #             print(f"Мишень №4 поражена")
-                    #             start_time4 = time.time()
-                    #
-                    #     case _:
-                    #         print("Что это было?")
-
+                    
                     set_new_text_label() #Обновляем данные о поражениях
 
 
