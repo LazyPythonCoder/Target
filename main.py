@@ -231,8 +231,9 @@ def get_telemetry():
                         print("mavtext=", res[-1])
                         reslast = res[-1]
                         result = ''.join([str(x) for x in reslast])
-                        target_num, num_tar, zona = result.split("-")
-                        print("Данные",target_num, num_tar, zona)
+                        target_num, num_tar, zona = result.split("-") # Данные если из ESP32
+                        # target_num = msg.get_srcSystem() #Берем данные о номере мишени из ID, чтобы не менять код в ESP32 
+                        print("Данные:",target_num, num_tar, zona)
                         match target_num:
                             case "1":
                                 tar1 = int(num_tar)
