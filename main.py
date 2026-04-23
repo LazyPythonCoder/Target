@@ -115,6 +115,19 @@ def change_color_green_head(number_of_button:int):
 
 
 
+# def test():
+#     print('TEST')
+#     master.mav.command_long_send(1, master.target_component, mavutil.mavlink.MAV_CMD_DO_SET_RELAY,
+#                                  # Команда
+#                                  0,  # confirmation
+#                                  0,  # param1 (Номер реле)
+#                                  1,  # param2 (1 - ON)
+#                                  0, 0, 0, 0, 0  # Остальные параметры
+#                                  )
+
+
+
+
 def relay_trigger(number_of_target:int):
     print("TRIGGER")
     change_color_green(number_of_target)
@@ -212,17 +225,18 @@ def get_telemetry():
                         case _:
                             print("Что это было?")
 
- # Парсим данные от мишени 1-55-1 (Номер мишени-количество попаданий-индентификатор места попадания)
+ # Парсим данные от мишени 1-55-1
                     res = re.findall(r'\d{1}-\d+-\d{1}', mavtext)
                     if res:
                         print("mavtext=", res[-1])
                         reslast = res[-1]
                         result = ''.join([str(x) for x in reslast])
-                        target_num, num_tar, zona = result.split("-") # Данные если из ESP32
-                        # target_num = msg.get_srcSystem() #Берем данные о номере мишени из ID, чтобы не менять код в ESP32 
-                        print("Данные:",target_num, num_tar, zona)
+                        target_num, num_tar, zona = result.split("-")
+                        target_num = str(msg.get_srcSystem()) #Данные о номере мишени из ID
+                        print("Данные",target_num, num_tar, zona)
                         match target_num:
                             case "1":
+                                print("YYYYYY")
                                 tar1 = int(num_tar)
                                 if zona == "1":
                                     change_color_red_head(1)
@@ -249,8 +263,8 @@ def get_telemetry():
                                     change_color_red_head(4)
                                 if zona == "2":
                                     change_color_red(4)
-
                     
+
                     set_new_text_label() #Обновляем данные о поражениях
 
 
@@ -307,4 +321,5 @@ form.resetButton3.clicked.connect(lambda: reset_target(3))
 form.resetButton4.clicked.connect(lambda: reset_target(4))
 
 app.exec()
+
 
