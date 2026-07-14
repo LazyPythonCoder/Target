@@ -1,7 +1,7 @@
 #include <Servo.h>
 #include <ezButton.h>
 
-#define RELAY_PIN 6 // PIN to Relay 
+#define RELAY_PIN 6 // PIN to Relay (Radio) 
 #define SERVO_PIN 8 // PIN to SERVO
 #define TARGET_PIN 5 // PIN to Relay for target
 
@@ -30,7 +30,6 @@ void loop() {
       Serial.println(digitalRead(RELAY_PIN));
       if (angle<=30) {
         myservo.write(180);
-      //   myservo.writeMicroseconds(2500); 
         delay(100);
       } else {
         myservo.write(0);
@@ -45,11 +44,15 @@ void loop() {
    if (relayState == HIGH) {
     Serial.print("Состояние реле=");
     Serial.println(relayState);
-     angle =  myservo.read();
-     if (angle<50) {
-      myservo.write(180);
+    angle =  myservo.read();
+   //  Serial.print("угол=");
+   //  Serial.println(angle);
+     if (angle<30) {
+         myservo.write(180);
+      } else {
+         myservo.write(0);
       }
-      delay(100);
+      delay(2000);
       Serial.print("Положение сервопривода из за реле=");
       Serial.println(myservo.read());
    }
