@@ -49,7 +49,7 @@ void loop() {
    //  Serial.println(angle);
      if (angle<30) {
          myservo.write(180);
-      } 
+      }
       delay(2000);
       Serial.print("Положение сервопривода из за реле=");
       Serial.println(myservo.read());
