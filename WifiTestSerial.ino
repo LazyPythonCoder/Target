@@ -67,7 +67,7 @@ void loop() {
 
   unsigned long startTime = millis();
 
-  // Сбор данных 50 мс
+  // Сбор данных 100 мс
   while (millis() - startTime < DURATION) {
     mpu1.getEvent(&a1, &g1, &temp1);
     mpu2.getEvent(&a2, &g2, &temp2);
