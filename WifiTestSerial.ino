@@ -3,118 +3,107 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 
-// Настройки Wi-Fi точки доступа
-const char* ssid = "ESP32_Sensor_AP";
-const char* password = "12345678"; // Минимум 8 символов
+// Настройки создаваемой Wi-Fi сети
+const char* ap_ssid     = "ESP32_GY521_Net"; // Имя сети, которую создаст ESP32
+const char* ap_password = "12345678"; // Пароль (минимум 8 символов)
 
-// Создаем TCP-сервер на порту 8023
-WiFiServer server(8023);
+// Создаем TCP-сервер на порту 23 (Telnet)
+WiFiServer server(23);
 WiFiClient client;
 
+// Датчики GY-521
 Adafruit_MPU6050 mpu1;
 Adafruit_MPU6050 mpu2;
+const uint8_t MPU1_ADDR = 0x68;
+const uint8_t MPU2_ADDR = 0x69;
 
-// Порог для резкого металлического удара (в м/с²).
-const float IMPACT_THRESHOLD = 40.0; 
-
-// Время блокировки после удара (в мс) для гашения вибрации ("звона") металла
-const unsigned long DEBOUNCE_TIME = 300; 
-unsigned long lastImpactTime = 0;
+const float THRESHOLD = 10.0;       
+const unsigned long DURATION = 100;  
 
 void setup() {
   Serial.begin(115200);
+  delay(10);
 
-  // Настройка ESP32 в режим точки доступа
-  WiFi.softAP(ssid, password);
+  // Настройка ESP32 в режим Точки Доступа (Access Point)
+  Serial.println("Запуск точки доступа...");
+  WiFi.softAP(ap_ssid, ap_password);
 
-  // Вывод IP-адреса в Serial для контроля
-  IPAddress IP = WiFi.softAPIP();
-  Serial.print("AP IP address: ");
-  Serial.println(IP);
+  // Выводим информацию о созданной сети
+  Serial.print("Сеть создана: ");
+  Serial.println(ap_ssid);
+  Serial.print("IP-адрес для подключения в PuTTY: ");
+  Serial.println(WiFi.softAPIP()); // Обычно это 192.168.4.1
 
   // Запуск TCP-сервера
   server.begin();
-  Serial.println("Server started. Waiting for PuTTY connection...");
 
-  // Повышаем скорость шины I2C до 400 кГц для быстрого опроса датчиков
-  Wire.begin(21, 22, 400000); 
-
-  if (!mpu1.begin(0x68)) {
-    Serial.println("Ошибка: Датчик 1 (0x68) не найден!");
+  // Инициализация датчиков
+  Wire.begin(21, 22);
+  
+  if (!mpu1.begin(MPU1_ADDR, &Wire) || !mpu2.begin(MPU2_ADDR, &Wire)) {
+    Serial.println("Ошибка инициализации датчиков!");
     while (1) delay(10);
   }
-
-  if (!mpu2.begin(0x69)) {
-    Serial.println("Ошибка: Датчик 2 (0x69) не найден!");
-    while (1) delay(10);
-  }
-
-  // Настройки для регистрации резких пиковых ускорений
   mpu1.setAccelerometerRange(MPU6050_RANGE_16_G);
   mpu2.setAccelerometerRange(MPU6050_RANGE_16_G);
   
-  mpu1.setFilterBandwidth(MPU6050_BAND_260_HZ);
-  mpu2.setFilterBandwidth(MPU6050_BAND_260_HZ);
-
-  Serial.println("Система запущена. Ожидание удара...");
+  Serial.println("Система готова к работе.");
 }
 
 void loop() {
-  // Поддерживаем подключение PuTTY в фоновом режиме
+  // Проверяем подключение клиента (PuTTY)
   if (!client || !client.connected()) {
     client = server.available();
     if (client) {
-      Serial.println("PuTTY connected!");
+      Serial.println("PuTTY успешно подключился по Wi-Fi!");
+      client.println("Подключение установлено. Ожидание данных...");
     }
   }
 
+  float maxZ1 = 0;
+  float maxZ2 = 0;
   sensors_event_t a1, g1, temp1;
   sensors_event_t a2, g2, temp2;
 
-  // Быстрое считывание данных
-  mpu1.getEvent(&a1, &g1, &temp1);
-  mpu2.getEvent(&a2, &g2, &temp2);
+  unsigned long startTime = millis();
 
-  // Получаем модуль ускорения по оси Z
-  float accelZ1 = abs(a1.acceleration.z);
-  float accelZ2 = abs(a2.acceleration.z);
+  // Сбор данных 50 мс
+  while (millis() - startTime < DURATION) {
+    mpu1.getEvent(&a1, &g1, &temp1);
+    mpu2.getEvent(&a2, &g2, &temp2);
 
-  // Проверяем факт превышения порога
-  bool hit1 = (accelZ1 > IMPACT_THRESHOLD);
-  bool hit2 = (accelZ2 > IMPACT_THRESHOLD);
+    float absZ1 = abs(a1.acceleration.z);
+    float absZ2 = abs(a2.acceleration.z);
 
-  // Если зафиксировано превышение порога ХОТЯ БЫ на одном датчике
-  if (hit1 || hit2) {
-    // Проверяем, прошло ли время блокировки дребезга
-    if ((millis() - lastImpactTime) > DEBOUNCE_TIME) {
-      
-      // Формируем базовую строку с показаниями
-      String msg = "Событие! Датчик1: " + String(accelZ1, 2) + " м/с², Датчик2: " + String(accelZ2, 2) + " м/с² -> ";
+    if (absZ1 > maxZ1) maxZ1 = absZ1;
+    if (absZ2 > maxZ2) maxZ2 = absZ2;
+  }
 
-      // Логика обработки результата
-      if (hit1 && !hit2) {
-        msg += "РЕЗУЛЬТАТ: УДАР\r\n";
-      } 
-      else if (hit1 && hit2) {
-        msg += "ИГНОР (Оба одновременно)\r\n";
-      }
-      else {
-        msg += "ИГНОР (Только датчик 2)\r\n";
-      }
+  bool p1_exceeded = (maxZ1 > THRESHOLD);
+  bool p2_exceeded = (maxZ2 > THRESHOLD);
 
-      // Выводим в Serial для локальной отладки
-      Serial.print(msg);
+  // Проверка порогов и отправка
+  if (p1_exceeded || p2_exceeded) {
+    String message = "";
 
-      // Мгновенная отправка данных в PuTTY (если программа подключена)
-      if (client && client.connected()) {
-        client.print(msg);
-      }
+    if (p1_exceeded && p2_exceeded) {
+      message += "Два датчика | ";
+    } else if (p1_exceeded) {
+      message += "Удар | ";
+    } else if (p2_exceeded) {
+      message += "Превышен порог на втором датчике | ";
+    }
 
-      // Обновляем время последнего события
-      lastImpactTime = millis();
+    message += "Макс Z1: " + String(maxZ1) + " м/с², Макс Z2: " + String(maxZ2) + " м/с²";
+
+    // Лог в локальный Serial (для отладки по проводу)
+    Serial.println(message);
+
+    // Беспроводная отправка в PuTTY
+    if (client && client.connected()) {
+      client.println(message);
     }
   }
 
-  // Минимальная задержка цикла для высокой частоты сканирования
-  delay(1); 
+  delay(10);
 }
