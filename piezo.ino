@@ -15,8 +15,8 @@ WiFiClient client;
 
 void setup() {
   Serial.begin(115200);
-  pinMode(PIEZO_PIN, INPUT);
-
+  // pinMode(PIEZO_PIN, INPUT);
+  analogSetPinAttenuation(PIEZO_PIN, ADC_11db);
   // Настройка ESP32 как точки доступа
   Serial.println("Запуск точки доступа...");
   WiFi.softAP(ssid, password);
