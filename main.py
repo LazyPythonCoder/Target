@@ -236,7 +236,6 @@ def get_telemetry():
                         print("Данные",target_num, num_tar, zona)
                         match target_num:
                             case "1":
-                                print("YYYYYY")
                                 tar1 = int(num_tar)
                                 if zona == "1":
                                     change_color_red_head(1)
