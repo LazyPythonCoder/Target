@@ -1,85 +1,108 @@
-// Конфигурация пинов GPIO
-#define HEAD_PIN 25   // GPIO для зоны "Голова"
-#define BODY_PIN 27   // GPIO для зоны "Туловище"
-#define SIGNAL_PIN 21 // Вывод индикации попадания
+#include <Arduino.h>
 
-// Флаги попаданий для обработки в основном цикле
+// --- Конфигурация пинов GPIO ---
+#define HEAD_PIN 25   // Вход: зона "Голова"
+#define BODY_PIN 27   // Вход: зона "Туловище"
+#define SIGNAL_PIN 21 // Выход: индикация попадания (HIGH на 2 секунды)
+
+// --- Переменные для прерываний (volatile) ---
 volatile bool head_hit = false;
 volatile bool body_hit = false;
 
-// Таймеры для глобальной блокировки системы после выстрела (в миллисекундах)
+// --- Объявление мьютекса для безопасного многоядерного доступа ---
+// Это стандартный и самый надежный способ защиты памяти в ESP32
+portMUX_TYPE myMutex = portMUX_INITIALIZER_UNLOCKED;
+
+// --- Переменные глобальной блокировки и логики (в миллисекундах) ---
 unsigned long global_lock_until = 0; 
 const unsigned long LOCK_DURATION_MS = 5000; // Время слепоты мишени — 5 секунд
 
-// Общий счетчик попаданий (голова + туловище)
-unsigned int total_hits = 0;
-
-// Таймеры для управления сигнальным пином GPIO21 (в миллисекундах)
+// --- Переменные управления сигнальным пином GPIO21 ---
 unsigned long signal_off_time = 0;
 bool signal_active = false;
 
+// --- Общий сквозной счетчик попаданий ---
+unsigned int total_hits = 0;
+
 // ========================================================
-// ОБРАБОТЧИК ПРЕРЫВАНИЯ ДЛЯ ГОЛОВЫ
+// ОБРАБОТЧИК ПРЕРЫВАНИЯ ДЛЯ ГОЛОВЫ (в IRAM памяти)
 // ========================================================
 void IRAM_ATTR headISR() {
   unsigned long current_millis = millis();
   
-  // Если 5 секунд с момента последнего засчитанного попадания еще не прошли — игнорируем
   if (current_millis >= global_lock_until) { 
+    // Внутри ISR для изменения переменной используем ISR-версию критической секции
+    portENTER_CRITICAL_ISR(&myMutex);
     head_hit = true;
+    portEXIT_CRITICAL_ISR(&myMutex);
   }
 }
 
 // ========================================================
-// ОБРАБОТЧИК ПРЕРЫВАНИЯ ДЛЯ ТУЛОВИЩА
+// ОБРАБОТЧИК ПРЕРЫВАНИЯ ДЛЯ ТУЛОВИЩА (в IRAM памяти)
 // ========================================================
 void IRAM_ATTR bodyISR() {
   unsigned long current_millis = millis();
   
-  // Если 5 секунд с момента последнего засчитанного попадания еще не прошли — игнорируем
   if (current_millis >= global_lock_until) { 
+    // Внутри ISR для изменения переменной используем ISR-версию критической секции
+    portENTER_CRITICAL_ISR(&myMutex);
     body_hit = true;
+    portEXIT_CRITICAL_ISR(&myMutex);
   }
 }
 
+// ========================================================
+// ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ
+// ========================================================
 void setup() {
   Serial.begin(115200);
   
-  // Конфигурация сигнального пина
+  // Настройка сигнального пина
   pinMode(SIGNAL_PIN, OUTPUT);
-  digitalWrite(SIGNAL_PIN, LOW); // Изначально LOW
+  digitalWrite(SIGNAL_PIN, LOW); // Изначально находится в режиме LOW
   
-  // Конфигурация входов мишени (требуется внешняя обвязка 1 кОм и 1 нФ!)
+  // Настройка входов мишени (требуются внешние подтяжки 1 кОм и конденсаторы 1 нФ!)
   pinMode(HEAD_PIN, INPUT_PULLUP);
   pinMode(BODY_PIN, INPUT_PULLUP);
   
-  // Настройка прерываний на падение уровня (FALLING)
+  // Привязка аппаратных прерываний строго на падение уровня (FALLING)
   attachInterrupt(digitalPinToInterrupt(HEAD_PIN), headISR, FALLING);
   attachInterrupt(digitalPinToInterrupt(BODY_PIN), bodyISR, FALLING);
   
-  // Serial.println("Система мишени №1 с блокировкой на 5 секунд готова.");
+  Serial.println("Система двухзонной мишени №1 запущена и готова.");
 }
 
+// ========================================================
+// ОСНОВНОЙ ЦИКЛ ОБРАБОТКИ
+// ========================================================
 void loop() {
   unsigned long current_millis = millis();
   
+  // Локальные копии флагов для безопасной работы
+  bool local_head_hit = false;
+  bool local_body_hit = false;
+
+  // --- АТОМАРНАЯ СЕКЦИЯ БЕЗОПАСНОСТИ ESP32 (Вместо noInterrupts) ---
+  // Блокируем доступ к переменным для других потоков и ядер на доли микросекунды,
+  // быстро копируем флаги и обнуляем оригиналы.
+  portENTER_CRITICAL(&myMutex);
+  if (head_hit) { local_head_hit = true; head_hit = false; }
+  if (body_hit) { local_body_hit = true; body_hit = false; }
+  portEXIT_CRITICAL(&myMutex);
+  
   // --- ОБРАБОТКА ПОПАДАНИЯ В ГОЛОВУ ---
-  if (head_hit) {
-    head_hit = false; // Сразу сбрасываем флаг прерывания
-    
-    // Двойная проверка на случай, если прерывание успело проскочить до обновления таймера
+  if (local_head_hit) {
     if (current_millis >= global_lock_until) {
-      // Устанавливаем «слепоту» мишени на 5 секунд вперед
-      global_lock_until = current_millis + LOCK_DURATION_MS; 
+      global_lock_until = current_millis + LOCK_DURATION_MS; // Запираем мишень на 5 секунд
+      total_hits++; 
       
-      total_hits++; // Увеличиваем общий счетчик мишени
-      
-      // Вывод сообщения вида 1-А-Б (Б = 1 для головы)
+      // Вывод сообщения: 1-А-Б (1 - мишень №1, А - всего попаданий, Б - 1 для головы)
       Serial.print("1-");
       Serial.print(total_hits);
       Serial.println("-1");
       
-      // Включение сигнального пина на 2 секунды
+      // Активируем сигнальный пин GPIO21 на 2 секунды
       digitalWrite(SIGNAL_PIN, HIGH);
       signal_off_time = current_millis + 2000;
       signal_active = true;
@@ -87,29 +110,24 @@ void loop() {
   }
   
   // --- ОБРАБОТКА ПОПАДАНИЯ В ТУЛОВИЩЕ ---
-  if (body_hit) {
-    body_hit = false; // Сразу сбрасываем флаг прерывания
-    
-    // Двойная проверка на случай, если прерывание успело проскочить до обновления таймера
+  if (local_body_hit) {
     if (current_millis >= global_lock_until) {
-      // Устанавливаем «слепоту» мишени на 5 секунд вперед
-      global_lock_until = current_millis + LOCK_DURATION_MS; 
+      global_lock_until = current_millis + LOCK_DURATION_MS; // Запираем мишень на 5 секунд
+      total_hits++; 
       
-      total_hits++; // Увеличиваем общий счетчик мишени
-      
-      // Вывод сообщения вида 1-А-Б (Б = 2 для туловища)
+      // Вывод сообщения: 1-А-Б (1 - мишень №1, А - всего попаданий, Б - 2 для туловища)
       Serial.print("1-");
       Serial.print(total_hits);
       Serial.println("-2");
       
-      // Включение сигнального пина на 2 секунды
+      // Активируем сигнальный пин GPIO21 на 2 секунды
       digitalWrite(SIGNAL_PIN, HIGH);
       signal_off_time = current_millis + 2000;
       signal_active = true;
     }
   }
   
-  // --- АСИНХРОННОЕ ВЫКЛЮЧЕНИЕ СИГНАЛЬНОГО ПИНА Через 2 секунды ---
+  // --- АСИНХРОННОЕ ВЫКЛЮЧЕНИЕ СИГНАЛЬНОГО ПИНА GPIO21 Через 2 секунды ---
   if (signal_active && (current_millis >= signal_off_time)) {
     digitalWrite(SIGNAL_PIN, LOW);
     signal_active = false;
