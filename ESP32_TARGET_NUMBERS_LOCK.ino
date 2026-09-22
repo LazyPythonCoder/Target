@@ -60,8 +60,8 @@ void setup() {
   digitalWrite(SIGNAL_PIN, LOW);
   
   // Настройка входов мишени (требуются внешние подтяжки 1 кОм и конденсаторы 1 нФ!)
-  pinMode(HEAD_PIN, INPUT_PULLUP);
-  pinMode(BODY_PIN, INPUT_PULLUP);
+  pinMode(HEAD_PIN, INPUT);
+  pinMode(BODY_PIN, INPUT);
   
   // Привязка аппаратных прерываний строго на падение уровня (FALLING)
   attachInterrupt(digitalPinToInterrupt(HEAD_PIN), headISR, FALLING);
