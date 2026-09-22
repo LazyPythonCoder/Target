@@ -12,15 +12,15 @@ volatile bool body_hit = false;
 // --- Спинлок для безопасного многоядерного доступа ESP32 ---
 portMUX_TYPE myMutex = portMUX_INITIALIZER_UNLOCKED;
 
-// --- Переменные глобальной блокировки (в миллисекундах) ---
-volatile unsigned long last_hit_time = 0; // Время последнего засчитанного попадания
-volatile bool is_locked = false;          // Флаг активной блокировки мишени
-const unsigned long LOCK_DURATION_MS = 5000; // Время слепоты мишени — 5 секунд
+// --- Переменные глобальной блокировки ---
+volatile unsigned long last_hit_time = 0;     // Время последнего засчитанного попадания
+volatile bool is_locked = false;              // Флаг активной блокировки мишени
+constexpr unsigned long LOCK_DURATION_MS = 5000; // Время слепоты мишени — 5 секунд
 
 // --- Переменные управления сигнальным пином GPIO21 ---
 unsigned long signal_start_time = 0;
 bool signal_active = false;
-const unsigned long SIGNAL_DURATION_MS = 2000; // Длительность сигнала — 2 секунды
+constexpr unsigned long SIGNAL_DURATION_MS = 2000; // Длительность сигнала — 2 секунды
 
 // --- Общий сквозной счетчик попаданий ---
 unsigned int total_hits = 0;
@@ -29,14 +29,10 @@ unsigned int total_hits = 0;
 // ОБРАБОТЧИК ПРЕРЫВАНИЯ ДЛЯ ГОЛОВЫ (в IRAM памяти)
 // ========================================================
 void IRAM_ATTR headISR() {
-  unsigned long current_millis = millis();
-  
   portENTER_CRITICAL_ISR(&myMutex);
-  // Проверяем блокировку прямо внутри критической секции прерывания
-  if (!is_locked || (current_millis - last_hit_time >= LOCK_DURATION_MS)) { 
+  if (!is_locked) { 
     head_hit = true;
-    is_locked = true; // Сразу же блокируем новые попадания на уровне прерываний
-    last_hit_time = current_millis;
+    is_locked = true; // Мгновенная блокировка на аппаратном уровне прерываний
   }
   portEXIT_CRITICAL_ISR(&myMutex);
 }
@@ -45,14 +41,10 @@ void IRAM_ATTR headISR() {
 // ОБРАБОТЧИК ПРЕРЫВАНИЯ ДЛЯ ТУЛОВИЩА (в IRAM памяти)
 // ========================================================
 void IRAM_ATTR bodyISR() {
-  unsigned long current_millis = millis();
-  
   portENTER_CRITICAL_ISR(&myMutex);
-  // Проверяем блокировку прямо внутри критической секции прерывания
-  if (!is_locked || (current_millis - last_hit_time >= LOCK_DURATION_MS)) { 
+  if (!is_locked) { 
     body_hit = true;
-    is_locked = true; // Сразу же блокируем новые попадания на уровне прерываний
-    last_hit_time = current_millis;
+    is_locked = true; // Мгновенная блокировка на аппаратном уровне прерываний
   }
   portEXIT_CRITICAL_ISR(&myMutex);
 }
@@ -86,8 +78,9 @@ void loop() {
   
   bool local_head_hit = false;
   bool local_body_hit = false;
+  int hit_zone = 0; // 0 - нет попадания, 1 - голова, 2 - туловище
 
-  // --- АТОМАРНАЯ СЕКЦИЯ КОПИРОВАНИЯ ---
+  // --- АТОМАРНАЯ СЕКЦИЯ СИНХРОНИЗАЦИИ ---
   portENTER_CRITICAL(&myMutex);
   
   // Автоматический сброс флага блокировки по истечении времени
@@ -95,36 +88,38 @@ void loop() {
     is_locked = false;
   }
   
-  if (head_hit) { local_head_hit = true; head_hit = false; }
-  // Если зафиксировано попадание в голову, игнорируем туловище в этот же миг
-  if (body_hit && !local_head_hit) { local_body_hit = true; body_hit = false; }
-  else if (body_hit) { body_hit = false; } // Очищаем дублирующий флаг
+  // Если блокировки нет (или она только что снялась) и есть прерывание
+  if (!is_locked) {
+    if (head_hit) { 
+      local_head_hit = true; 
+      hit_zone = 1;
+      is_locked = true;
+      last_hit_time = current_millis; // Фиксируем точное время попадания в loop
+    } 
+    // Если голова не поражена, но есть туловище
+    else if (body_hit) { 
+      local_body_hit = true; 
+      hit_zone = 2;
+      is_locked = true;
+      last_hit_time = current_millis; // Фиксируем точное время попадания в loop
+    }
+  }
+
+  // В любом случае очищаем «сырые» флаги прерываний, так как система сейчас в режиме блокировки
+  head_hit = false;
+  body_hit = false;
   
   portEXIT_CRITICAL(&myMutex);
   
-  // --- ОБРАБОТКА ПОПАДАНИЯ В ГОЛОВУ ---
-  if (local_head_hit) {
+  // --- ОБРАБОТКА ПОПАДАНИЯ ---
+  if (hit_zone > 0) {
     total_hits++; 
     
-    // Вывод сообщения: 1-А-Б (1 - мишень №1, А - всего попаданий, Б - 1 для головы)
+    // Унифицированный вывод сообщения: 1-А-Б (1 - мишень №1, А - всего, Б - зона)
     Serial.print("1-");
     Serial.print(total_hits);
-    Serial.println("-1");
-    
-    // Активируем сигнальный пин GPIO21
-    digitalWrite(SIGNAL_PIN, HIGH);
-    signal_start_time = current_millis;
-    signal_active = true;
-  }
-  
-  // --- ОБРАБОТКА ПОПАДАНИЯ В ТУЛОВИЩЕ ---
-  if (local_body_hit) {
-    total_hits++; 
-    
-    // Вывод сообщения: 1-А-Б (1 - мишень №1, А - всего попаданий, Б - 2 для туловища)
-    Serial.print("1-");
-    Serial.print(total_hits);
-    Serial.println("-2");
+    Serial.print("-");
+    Serial.println(hit_zone);
     
     // Активируем сигнальный пин GPIO21
     digitalWrite(SIGNAL_PIN, HIGH);
