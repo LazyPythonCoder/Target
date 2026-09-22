@@ -9,17 +9,18 @@
 volatile bool head_hit = false;
 volatile bool body_hit = false;
 
-// --- Объявление мьютекса для безопасного многоядерного доступа ---
-// Это стандартный и самый надежный способ защиты памяти в ESP32
+// --- Спинлок для безопасного многоядерного доступа ESP32 ---
 portMUX_TYPE myMutex = portMUX_INITIALIZER_UNLOCKED;
 
-// --- Переменные глобальной блокировки и логики (в миллисекундах) ---
-unsigned long global_lock_until = 0; 
+// --- Переменные глобальной блокировки (в миллисекундах) ---
+volatile unsigned long last_hit_time = 0; // Время последнего засчитанного попадания
+volatile bool is_locked = false;          // Флаг активной блокировки мишени
 const unsigned long LOCK_DURATION_MS = 5000; // Время слепоты мишени — 5 секунд
 
 // --- Переменные управления сигнальным пином GPIO21 ---
-unsigned long signal_off_time = 0;
+unsigned long signal_start_time = 0;
 bool signal_active = false;
+const unsigned long SIGNAL_DURATION_MS = 2000; // Длительность сигнала — 2 секунды
 
 // --- Общий сквозной счетчик попаданий ---
 unsigned int total_hits = 0;
@@ -30,12 +31,14 @@ unsigned int total_hits = 0;
 void IRAM_ATTR headISR() {
   unsigned long current_millis = millis();
   
-  if (current_millis >= global_lock_until) { 
-    // Внутри ISR для изменения переменной используем ISR-версию критической секции
-    portENTER_CRITICAL_ISR(&myMutex);
+  portENTER_CRITICAL_ISR(&myMutex);
+  // Проверяем блокировку прямо внутри критической секции прерывания
+  if (!is_locked || (current_millis - last_hit_time >= LOCK_DURATION_MS)) { 
     head_hit = true;
-    portEXIT_CRITICAL_ISR(&myMutex);
+    is_locked = true; // Сразу же блокируем новые попадания на уровне прерываний
+    last_hit_time = current_millis;
   }
+  portEXIT_CRITICAL_ISR(&myMutex);
 }
 
 // ========================================================
@@ -44,12 +47,14 @@ void IRAM_ATTR headISR() {
 void IRAM_ATTR bodyISR() {
   unsigned long current_millis = millis();
   
-  if (current_millis >= global_lock_until) { 
-    // Внутри ISR для изменения переменной используем ISR-версию критической секции
-    portENTER_CRITICAL_ISR(&myMutex);
+  portENTER_CRITICAL_ISR(&myMutex);
+  // Проверяем блокировку прямо внутри критической секции прерывания
+  if (!is_locked || (current_millis - last_hit_time >= LOCK_DURATION_MS)) { 
     body_hit = true;
-    portEXIT_CRITICAL_ISR(&myMutex);
+    is_locked = true; // Сразу же блокируем новые попадания на уровне прерываний
+    last_hit_time = current_millis;
   }
+  portEXIT_CRITICAL_ISR(&myMutex);
 }
 
 // ========================================================
@@ -60,7 +65,7 @@ void setup() {
   
   // Настройка сигнального пина
   pinMode(SIGNAL_PIN, OUTPUT);
-  digitalWrite(SIGNAL_PIN, LOW); // Изначально находится в режиме LOW
+  digitalWrite(SIGNAL_PIN, LOW);
   
   // Настройка входов мишени (требуются внешние подтяжки 1 кОм и конденсаторы 1 нФ!)
   pinMode(HEAD_PIN, INPUT_PULLUP);
@@ -79,57 +84,61 @@ void setup() {
 void loop() {
   unsigned long current_millis = millis();
   
-  // Локальные копии флагов для безопасной работы
   bool local_head_hit = false;
   bool local_body_hit = false;
 
-  // --- АТОМАРНАЯ СЕКЦИЯ БЕЗОПАСНОСТИ ESP32 (Вместо noInterrupts) ---
-  // Блокируем доступ к переменным для других потоков и ядер на доли микросекунды,
-  // быстро копируем флаги и обнуляем оригиналы.
+  // --- АТОМАРНАЯ СЕКЦИЯ КОПИРОВАНИЯ ---
   portENTER_CRITICAL(&myMutex);
+  
+  // Автоматический сброс флага блокировки по истечении времени
+  if (is_locked && (current_millis - last_hit_time >= LOCK_DURATION_MS)) {
+    is_locked = false;
+  }
+  
   if (head_hit) { local_head_hit = true; head_hit = false; }
-  if (body_hit) { local_body_hit = true; body_hit = false; }
+  // Если зафиксировано попадание в голову, игнорируем туловище в этот же миг
+  if (body_hit && !local_head_hit) { local_body_hit = true; body_hit = false; }
+  else if (body_hit) { body_hit = false; } // Очищаем дублирующий флаг
+  
   portEXIT_CRITICAL(&myMutex);
   
   // --- ОБРАБОТКА ПОПАДАНИЯ В ГОЛОВУ ---
   if (local_head_hit) {
-    if (current_millis >= global_lock_until) {
-      global_lock_until = current_millis + LOCK_DURATION_MS; // Запираем мишень на 5 секунд
-      total_hits++; 
-      
-      // Вывод сообщения: 1-А-Б (1 - мишень №1, А - всего попаданий, Б - 1 для головы)
-      Serial.print("1-");
-      Serial.print(total_hits);
-      Serial.println("-1");
-      
-      // Активируем сигнальный пин GPIO21 на 2 секунды
-      digitalWrite(SIGNAL_PIN, HIGH);
-      signal_off_time = current_millis + 2000;
-      signal_active = true;
-    }
+    total_hits++; 
+    
+    // Вывод сообщения: 1-А-Б (1 - мишень №1, А - всего попаданий, Б - 1 для головы)
+    Serial.print("1-");
+    Serial.print(total_hits);
+    Serial.println("-1");
+    
+    // Активируем сигнальный пин GPIO21
+    digitalWrite(SIGNAL_PIN, HIGH);
+    signal_start_time = current_millis;
+    signal_active = true;
   }
   
   // --- ОБРАБОТКА ПОПАДАНИЯ В ТУЛОВИЩЕ ---
   if (local_body_hit) {
-    if (current_millis >= global_lock_until) {
-      global_lock_until = current_millis + LOCK_DURATION_MS; // Запираем мишень на 5 секунд
-      total_hits++; 
-      
-      // Вывод сообщения: 1-А-Б (1 - мишень №1, А - всего попаданий, Б - 2 для туловища)
-      Serial.print("1-");
-      Serial.print(total_hits);
-      Serial.println("-2");
-      
-      // Активируем сигнальный пин GPIO21 на 2 секунды
-      digitalWrite(SIGNAL_PIN, HIGH);
-      signal_off_time = current_millis + 2000;
-      signal_active = true;
-    }
+    total_hits++; 
+    
+    // Вывод сообщения: 1-А-Б (1 - мишень №1, А - всего попаданий, Б - 2 для туловища)
+    Serial.print("1-");
+    Serial.print(total_hits);
+    Serial.println("-2");
+    
+    // Активируем сигнальный пин GPIO21
+    digitalWrite(SIGNAL_PIN, HIGH);
+    signal_start_time = current_millis;
+    signal_active = true;
   }
   
-  // --- АСИНХРОННОЕ ВЫКЛЮЧЕНИЕ СИГНАЛЬНОГО ПИНА GPIO21 Через 2 секунды ---
-  if (signal_active && (current_millis >= signal_off_time)) {
+  // --- АСИНХРОННОЕ ВЫКЛЮЧЕНИЕ СИГНАЛЬНОГО ПИНА GPIO21 ---
+  if (signal_active && (current_millis - signal_start_time >= SIGNAL_DURATION_MS)) {
     digitalWrite(SIGNAL_PIN, LOW);
     signal_active = false;
   }
+  
+  // Даем FreeRTOS перевести дыхание (предотвращает срабатывание Watchdog)
+  vTaskDelay(pdMS_TO_TICKS(1)); 
 }
+
