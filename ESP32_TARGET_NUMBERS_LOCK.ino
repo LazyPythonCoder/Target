@@ -53,7 +53,7 @@ void IRAM_ATTR bodyISR() {
 // ИНИЦИАЛИЗАЦИЯ СИСТЕМЫ
 // ========================================================
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(9600);
   
   // Настройка сигнального пина
   pinMode(SIGNAL_PIN, OUTPUT);
