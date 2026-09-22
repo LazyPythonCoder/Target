@@ -67,7 +67,7 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(HEAD_PIN), headISR, FALLING);
   attachInterrupt(digitalPinToInterrupt(BODY_PIN), bodyISR, FALLING);
   
-  Serial.println("Система двухзонной мишени №1 запущена и готова.");
+  // Serial.println("Система двухзонной мишени №1 запущена и готова.");
 }
 
 // ========================================================
