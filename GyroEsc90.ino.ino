@@ -223,7 +223,8 @@ ISR(PCINT2_vect) {
 
 // --- ФУНКЦИЯ АВТОМАТИЧЕСКОГО УДЕРЖАНИЯ КУРСА (PID) ---
 
-void tracking(int current_gas) {
+//void tracking(int current_gas) {
+void tracking(MOTOR_STOP) {
   // Проверка аппаратного сбоя шины I2C
   if (Wire.getWireTimeoutFlag()) {
     Serial.println(F("⚠️ Сбой I2C из-за наводок мотора! Мягкий перезапуск..."));
