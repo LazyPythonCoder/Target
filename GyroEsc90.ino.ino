@@ -170,7 +170,7 @@ void loop() {
     }
 
     // Передаем текущий газ для смешивания с коррекцией гироскопа
-    tracking(channel1); 
+    tracking(MOTOR_STOP); 
   }
 }
 
@@ -223,8 +223,7 @@ ISR(PCINT2_vect) {
 
 // --- ФУНКЦИЯ АВТОМАТИЧЕСКОГО УДЕРЖАНИЯ КУРСА (PID) ---
 
-//void tracking(int current_gas) {
-void tracking(MOTOR_STOP) {
+void tracking(int current_gas) {
   // Проверка аппаратного сбоя шины I2C
   if (Wire.getWireTimeoutFlag()) {
     Serial.println(F("⚠️ Сбой I2C из-за наводок мотора! Мягкий перезапуск..."));
