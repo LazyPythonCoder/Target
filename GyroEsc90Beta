@@ -1,0 +1,288 @@
+#include <Wire.h>
+#include <Servo.h>
+#include <MPU6050_light.h>
+
+// Определение пинов
+const byte CH1_PIN = 2;   // Канал 1 (Прерывание) -> Ручной поворот (в авторежиме заблокирован)
+const byte CH2_PIN = 3;   // Канал 2 (Прерывание) -> Тумблер: Ручной режим / Авто-стабилизация
+const byte CH3_PIN = 4;   // Канал 3 аппаратуры -> Триггер поворота на 93 градуса (Открыта/Закрыта)
+const byte ESC_PIN = 9;   // Пин управления ESC (ШИМ)
+
+const int MOTOR_STOP = 1500; 
+const int MOTOR_MIN = 1000;
+const int MOTOR_MAX = 2000;
+
+// НАСТРОЙКА: Минимальный импульс для преодоления трения редуктора и мертвой зоны ESC.
+// Увеличен с 30 до 45 для более резкого и жесткого отклика мотора при малых отклонениях.
+constexpr int ESC_DEADBAND_COMP = 45; 
+
+// Коэффициенты PID-регулятора (ПОДНЯТА ЖЕСТКОСТЬ УДЕРЖАНИЯ)
+double Kp = 6.5;  // Было 3.5. Сильнее сопротивляется сильному внешнему воздействию
+double Ki = 1.2;  // Было 0.5. Мощнее дотягивает мишень до исходной точки, убирая люфты
+double Kd = 0.25; // Было 0.1. Гасит возможные автоколебания и тряску от высоких Kp и Ki
+
+// Переменные для PID
+double targetAngle = 0.0; 
+double error = 0.0, lastError = 0.0;
+double integral = 0.0, derivative = 0.0;
+unsigned long lastTime = 0;
+unsigned long lastSerialTime = 0; 
+
+// Переменные прерываний радиоуправления
+volatile unsigned long ch1_start = 0;
+volatile int ch1_val = 1500; 
+
+volatile unsigned long ch2_start = 0;
+volatile int ch2_val = 1500; 
+
+volatile unsigned long ch3_start = 0;
+volatile int ch3_val = 1000; 
+
+bool isGyro = false;
+bool isRotated = false;    
+double preTurnAngle = 0.0; 
+bool systemReady = false;   
+
+MPU6050 mpu(Wire);
+Servo esc;
+
+void rx_ch1();
+void rx_ch2();
+void tracking(int current_gas);
+
+void setup() {
+  Serial.begin(115200); 
+  
+  Wire.begin();
+  // Защита от зависания шины I2C из-за наводок мотора
+  Wire.setWireTimeout(3000, true); 
+  
+  pinMode(CH1_PIN, INPUT);
+  pinMode(CH2_PIN, INPUT);
+  pinMode(CH3_PIN, INPUT);
+  
+  randomSeed(analogRead(A0));
+  
+  esc.attach(ESC_PIN, 1000, 2000);
+  esc.writeMicroseconds(MOTOR_STOP);
+  delay(2000); 
+
+  Serial.println(F("Инициализация MPU6050..."));
+  byte status = mpu.begin();
+  if (status != 0) {
+    Serial.print(F("Ошибка датчика! Статус: "));
+    Serial.println(status);
+    while (1); 
+  }
+  
+  Serial.println(F("Калибровка гироскопа. НЕ ДВИГАЙТЕ ТЕЛЕЖКУ..."));
+  delay(1000);
+  mpu.calcOffsets(); 
+  Serial.println(F("Калибровка завершена!"));
+  delay(500);
+
+  // Настройка аппаратных прерываний (Ch1 и Ch2)
+  attachInterrupt(digitalPinToInterrupt(CH1_PIN), rx_ch1, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(CH2_PIN), rx_ch2, CHANGE);
+  
+  // Настройка Pin Change Interrupt для D4 (Канал 3)
+  PCICR |= (1 << PCIE2);     
+  PCMSK2 |= (1 << PCINT20);  
+
+  mpu.update();
+  targetAngle = mpu.getAngleZ(); 
+  
+  lastTime = micros();
+  systemReady = true; 
+}
+
+void loop() {
+  if (!systemReady) return;
+
+  int channel1, channel2, channel3;
+  
+  // Безопасное копирование данных из прерываний
+  noInterrupts();
+  channel1 = ch1_val;
+  channel2 = ch2_val;
+  channel3 = ch3_val;
+  interrupts();
+  
+  int esc_signal = MOTOR_STOP; 
+  
+  // РЕЖИМ 1: Ручное управление (Тумблер выключен)
+  if (channel2 < 1500) {
+    if (isGyro) {
+      isGyro = false;
+      isRotated = false;
+      Serial.println(F("Режим: Ручное управление"));
+      integral = 0;
+      lastError = 0;
+    }
+    
+    // Мертвая зона для ручного управления
+    if (channel1 > 1470 && channel1 < 1530) {
+      esc_signal = MOTOR_STOP;
+    } else {
+      esc_signal = constrain(channel1, MOTOR_MIN, MOTOR_MAX);
+    }
+    esc.writeMicroseconds(esc_signal);
+
+  // РЕЖИМ 2: Авто-стабилизация (Тумблер включен)
+  } else {
+    if (!isGyro) {
+      Serial.println(F("Режим: Стабилизация включена"));
+      if (Wire.getWireTimeoutFlag()) Wire.clearWireTimeoutFlag();
+      
+      mpu.update();
+      targetAngle = mpu.getAngleZ(); 
+      lastTime = micros(); 
+      isGyro = true;
+      isRotated = false; 
+      integral = 0;
+      lastError = 0;
+    }
+    
+    // Логика переключения «Открыта / Закрыта» мишень (Поворот на ~93 градуса)
+    if (channel3 > 1550) {
+      if (!isRotated) {
+        preTurnAngle = targetAngle; 
+        int direction = (random(0, 2) == 0) ? -93 : 93; 
+        targetAngle = preTurnAngle + direction; 
+        isRotated = true;
+        
+        // СБРОС: Обнуляем ПИД-память принудительно при смене фазы, чтобы не было перелета угла
+        integral = 0;
+        lastError = 0;
+
+        Serial.print(F("Поворот мишени на: "));
+        Serial.print(direction);
+        Serial.print(F(" градусов. Новая цель: "));
+        Serial.println(targetAngle);
+      }
+    } else if (channel3 < 1500) { 
+      if (isRotated) {
+        targetAngle = preTurnAngle; 
+        isRotated = false;
+        
+        // СБРОС: Обнуляем ПИД-память при возврате в исходную позицию
+        integral = 0;
+        lastError = 0;
+
+        Serial.print(F("Возврат к исходному углу: "));
+        Serial.println(targetAngle);
+      }
+    }
+
+    // В авторежиме Канал 1 полностью заблокирован. Базовый газ равен MOTOR_STOP (1500).
+    // Положение мишени контролируется исключительно гироскопом.
+    tracking(MOTOR_STOP); 
+  }
+}
+
+// --- ОБРАБОТЧИКИ ПРЕРЫВАНИЙ С ИМПУЛЬСНЫХ КАНАЛОВ ПРИЕМНИКА ---
+
+void rx_ch1() {
+  unsigned long current_time = micros();
+  if (digitalRead(CH1_PIN) == HIGH) {
+    ch1_start = current_time;
+  } else {
+    if (ch1_start > 0) {
+      int pulse_width = current_time - ch1_start;
+      if (pulse_width >= 800 && pulse_width <= 2200) {
+        ch1_val = pulse_width;
+      }
+      ch1_start = 0; 
+    }
+  }
+}
+
+void rx_ch2() {
+  unsigned long current_time = micros();
+  if (digitalRead(CH2_PIN) == HIGH) {
+    ch2_start = current_time;
+  } else {
+    if (ch2_start > 0) {
+      int pulse_width = current_time - ch2_start;
+      if (pulse_width >= 800 && pulse_width <= 2200) {
+        ch2_val = pulse_width;
+      }
+      ch2_start = 0;
+    }
+  }
+}
+
+ISR(PCINT2_vect) {
+  unsigned long current_time = micros();
+  if (digitalRead(CH3_PIN) == HIGH) {
+    ch3_start = current_time;
+  } else {
+    if (ch3_start > 0) {
+      int pulse_width = current_time - ch3_start;
+      if (pulse_width >= 800 && pulse_width <= 2200) {
+        ch3_val = pulse_width;
+      }
+      ch3_start = 0;
+    }
+  }
+}
+
+// --- ФУНКЦИЯ УДЕРЖАНИЯ КУРСА МИШЕНИ (PID) ---
+
+void tracking(int current_gas) {
+  // Аппаратная реанимация шины I2C в случае помех от силового мотора
+  if (Wire.getWireTimeoutFlag()) {
+    Serial.println(F("⚠️ Сбой I2C из-за наводок мотора! Мягкий перезапуск шины..."));
+    Wire.clearWireTimeoutFlag();
+    Wire.begin(); 
+    esc.writeMicroseconds(current_gas); 
+    return;
+  }
+
+  mpu.update();
+  unsigned long currentTime = micros();
+  double dt = (currentTime - lastTime) / 1000000.0;
+  
+  // Частота работы регулятора ~200 Гц
+  if (dt < 0.005) return; 
+  lastTime = currentTime;
+
+  double currentAngle = mpu.getAngleZ(); 
+  if (isnan(currentAngle) || isinf(currentAngle)) return;
+
+  error = targetAngle - currentAngle; 
+  
+  // ИСПРАВЛЕНО: Новый алгоритм удержания интегральной составляющей.
+  // Интеграл больше не обнуляется при повороте рукой на угол > 15 градусов.
+  // Он копится непрерывно, заставляя мотор сопротивляться воздействию и возвращаться в ТОЧНЫЙ ноль.
+  // Во избежание эффекта «разноса» (windup) введено жесткое ограничение по накоплению (коридор ±60.0).
+  integral += error * dt;
+  integral = constrain(integral, -60.0, 60.0); 
+
+  derivative = (error - lastError) / dt;
+  lastError = error;
+
+  double controlOutput = (Kp * error) + (Ki * integral) + (Kd * derivative);
+
+  // Динамическое проталкивание мертвой зоны регулятора хода (ESC)
+  if (abs(error) > 0.4) {
+    if (controlOutput > 0) controlOutput += ESC_DEADBAND_COMP;
+    else if (controlOutput < 0) controlOutput -= ESC_DEADBAND_COMP;
+  }
+
+  // Расчет финального сигнала ШИМ для ESC мотора мишени
+  int gas_offset = current_gas - MOTOR_STOP;
+  int pwmSignal = MOTOR_STOP + gas_offset + (int)controlOutput;
+  pwmSignal = constrain(pwmSignal, MOTOR_MIN, MOTOR_MAX); 
+
+  esc.writeMicroseconds(pwmSignal);
+
+  // Вывод телеметрии (20 Гц) для отладки
+  if (millis() - lastSerialTime > 50) {
+    lastSerialTime = millis();
+    Serial.print(F("Target:")); Serial.print(targetAngle); Serial.print(F(" "));
+    Serial.print(F("Current:")); Serial.print(currentAngle); Serial.print(F(" "));
+    Serial.print(F("Err:")); Serial.print(error); Serial.print(F(" "));
+    Serial.print(F("PWM:")); Serial.println(pwmSignal);
+  }
+}
