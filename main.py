@@ -151,7 +151,7 @@ def relay_trigger(number_of_target: int):
                                  # Команда
                                  0,  # confirmation
                                  0,  # param1 (Номер реле)
-                                 1,  # param2 (1 - ON)
+                                 1,  # param2 (1 - ON, 0 - OFF)
                                  0, 0, 0, 0, 0  # Остальные параметры
                                  )
 
@@ -174,7 +174,7 @@ def relay_trigger(number_of_target: int):
                                  # Команда
                                  0,  # confirmation
                                  0,  # param1 (Номер реле)
-                                 0,  # param2 (1 - ON)
+                                 0,  # param2 (1 - ON, 0 - OFF)
                                  0, 0, 0, 0, 0  # Остальные параметры
                                  )
 
