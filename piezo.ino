@@ -5,6 +5,9 @@ const int PIEZO_PIN = 35;
 const unsigned long MEASUREMENT_WINDOW = 300; 
 const int TRIGGER_THRESHOLD = 50; 
 
+int target = 0;
+String message_cnt = "";
+
 // Настройки Wi-Fi точки доступа
 const char *ssid = "Gong_Target_ESP32"; // Имя сети Wi-Fi
 const char *password = "12345678";       // Пароль (минимум 8 символов)
@@ -58,14 +61,24 @@ void loop() {
     }
 
     // Формируем строку для отправки
-    String message = "ПОПАДАНИЕ! Максимум за 300 мс: " + String(maxValue);
+    String message = "Вибрация! Максимум за 300 мс: " + String(maxValue);
 
     // Вывод в локальную консоль ESP32 (через USB)
     Serial.println(message);
 
+    // Поверяем что есть попадание с силой более 2800
+    if (maxValue > 4000) {
+      target++;
+      message_cnt = "Попадание " + String(target);
+      Serial.println(message_cnt);
+    }
+
     // Отправка данных на компьютер по Wi-Fi (в PuTTY)
     if (client && client.connected()) {
-      client.println(message); 
+      client.println(message);
+      if (message_cnt != "") 
+        client.println(message_cnt);
+        message_cnt = "";
     }
 
     // Задержка для затухания вибрации
