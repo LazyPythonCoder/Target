@@ -1,0 +1,63 @@
+/ Определение пина и параметров замера
+const int PIEZO_PIN = 35; 
+const unsigned long MEASUREMENT_WINDOW = 300; 
+const int TRIGGER_THRESHOLD = 50; 
+const byte targetPin = 21;          // Пин, к которому подключен источник напряжения для ADC
+const long targetinterval = 2000;    // Время удержания HIGH значения (мс)
+
+int target = 0;
+String message_cnt = "";
+
+// Переменные для отслеживания времени выключения
+unsigned long targetOffTime = 0;    // Время (в мс), когда нужно перевести пин в LOW
+bool isTargetHigh = false;          // Флаг: включен ли пин прямо сейчас
+
+void setup() {
+  Serial.begin(9600);
+  analogSetPinAttenuation(PIEZO_PIN, ADC_11db);
+  pinMode(targetPin, OUTPUT);
+  digitalWrite(targetPin, LOW);
+}
+
+void loop() {
+  // 1. ПРОВЕРКА ТАЙМЕРА (Выключение пина)
+  // Если пин включен и текущее время превысило расчетное время выключения
+  if (isTargetHigh && (millis() >= targetOffTime)) {
+    digitalWrite(targetPin, LOW);
+    isTargetHigh = false;
+  }
+
+  // 2. ОПРОС ПЬЕЗОДАТЧИКА
+  int currentValue = analogRead(PIEZO_PIN);
+
+  // Если сигнал превысил порог, фиксируем начало удара
+  if (currentValue > TRIGGER_THRESHOLD) {
+    int maxValue = currentValue; 
+    unsigned long startTime = millis(); 
+
+    // Цикл поиска максимума в течение MEASUREMENT_WINDOW (300 мс)
+    while (millis() - startTime < MEASUREMENT_WINDOW) {
+      int sensorValue = analogRead(PIEZO_PIN);
+      if (sensorValue > maxValue) {
+        maxValue = sensorValue;
+      }
+    }
+
+    // Проверяем, что есть попадание с силой более 2800
+    if (maxValue > 2800) {
+      target++;
+      message_cnt = "2-" + String(target) + "-2";
+      Serial.println(message_cnt);
+      
+      digitalWrite(targetPin, HIGH); // Включаем или удерживаем HIGH
+      
+      // ГЛАВНОЕ: Перезаписываем время выключения. 
+      // При каждом новом попадании отсчет 2000 мс начинается ЗАВНОВО.
+      targetOffTime = millis() + targetinterval; 
+      isTargetHigh = true; 
+    }
+
+    // Задержка для затухания вибрации мишени
+    delay(200); 
+  }
+}
