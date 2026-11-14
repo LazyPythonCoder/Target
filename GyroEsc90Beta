@@ -119,7 +119,7 @@ void setup() {
   PCMSK2 |= (1 << PCINT20);
 
   mpu.update();
-  targetAngle = mpu.getAngleZ();
+  targetAngle = mpu.getAngleZ(); // targetAngle = -mpu.getAngleZ() Если перевернуть гироскоп по оси Х
   lastAngle = targetAngle;
 
   lastTime = micros();
@@ -214,7 +214,7 @@ void tracking() {
   if (dt < 0.005) return;
   lastTime = now;
 
-  double currentAngle = mpu.getAngleZ();
+  double currentAngle = mpu.getAngleZ(); // double currentAngle = -mpu.getAngleZ(); Если перевернуть по оси X
   if (isnan(currentAngle) || isinf(currentAngle)) return;
 
   double error = targetAngle - currentAngle;
