@@ -123,7 +123,7 @@ void setup() {
   PCMSK2 |= (1 << PCINT20);
 
   mpu.update();
-  targetAngle = mpu.getAngleZ(); // Поставьте -mpu.getAngleZ(), если датчик перевернут
+  targetAngle = -mpu.getAngleZ(); // Поставьте -mpu.getAngleZ(), если датчик перевернут
   lastAngle = targetAngle;
 
   lastTime = micros();
@@ -268,3 +268,4 @@ void tracking() {
     Serial.print(F("PWM:")); Serial.println(pwm);
   }
 }
+
