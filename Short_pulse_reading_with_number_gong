@@ -1,9 +1,9 @@
-/ Определение пина и параметров замера
+// Определение пина и параметров замера
 const int PIEZO_PIN = 35; 
 const unsigned long MEASUREMENT_WINDOW = 300; 
 const int TRIGGER_THRESHOLD = 50; 
 const byte targetPin = 21;          // Пин, к которому подключен источник напряжения для ADC
-const long targetinterval = 2000;    // Время удержания HIGH значения (мс)
+const long targetinterval = 1000;    // Время удержания HIGH значения (мс)
 
 int target = 0;
 String message_cnt = "";
@@ -52,7 +52,7 @@ void loop() {
       digitalWrite(targetPin, HIGH); // Включаем или удерживаем HIGH
       
       // ГЛАВНОЕ: Перезаписываем время выключения. 
-      // При каждом новом попадании отсчет 2000 мс начинается ЗАВНОВО.
+      // При каждом новом попадании отсчет 1000 мс начинается ЗАВНОВО.
       targetOffTime = millis() + targetinterval; 
       isTargetHigh = true; 
     }
