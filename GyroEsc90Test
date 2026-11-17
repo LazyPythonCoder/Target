@@ -1,0 +1,270 @@
+#include <Wire.h>
+#include <Servo.h>
+#include <MPU6050_light.h>
+
+// --- Пины ---
+const byte CH1_PIN = 2;  // Канал 1: поворот мишени вокруг оси (ручной режим)
+const byte CH2_PIN = 3;  // Канал 2: тумблер стабилизации (>1500 = вкл)
+const byte CH3_PIN = 4;  // Канал 3: триггер поворота на 93 градуса (работает только при CH2 > 1500)
+const byte ESC_PIN = 9;  // Выход на регулятор двигателя поворота мишени
+
+// --- Диапазоны ---
+const int MOTOR_STOP = 1500;
+const int MOTOR_MIN  = 1000;
+const int MOTOR_MAX  = 2000;
+
+constexpr int MANUAL_DEADBAND_LO = 1470;
+constexpr int MANUAL_DEADBAND_HI = 1530;
+constexpr int GYRO_MODE_ON       = 1520; // порог включения стабилизации (с гистерезисом)
+constexpr int GYRO_MODE_OFF      = 1480; // порог выключения стабилизации
+constexpr int TURN_TRIGGER_ON    = 1550; // включение поворота на 93°
+constexpr int TURN_TRIGGER_OFF   = 1500; // возврат к исходному углу
+constexpr int PULSE_MIN = 800;
+constexpr int PULSE_MAX = 2200;
+
+constexpr unsigned long FAILSAFE_US = 250000UL; // 250 мс без сигнала = стоп
+constexpr float TURN_ANGLE = 93.0f;
+constexpr float INTEGRAL_ZONE = 15.0f;      // зона работы интеграла, град
+constexpr float INTEGRAL_LIMIT_US = 150.0f; // предел вклада I, мкс
+constexpr int ESC_DEADBAND_COMP = 30;
+
+// --- PID ---
+double Kp = 3.5;
+double Ki = 0.5;
+double Kd = 0.1;
+
+double targetAngle = 0.0;
+double lastAngle = 0.0;
+double integral = 0.0;
+unsigned long lastTime = 0;
+unsigned long lastSerialTime = 0;
+
+// --- Каналы приёмника ---
+volatile unsigned long ch1_start = 0;
+volatile bool ch1_measuring = false;
+volatile int ch1_val = MOTOR_STOP;
+volatile unsigned long ch1_last = 0;
+
+volatile unsigned long ch2_start = 0;
+volatile bool ch2_measuring = false;
+volatile int ch2_val = 1000;
+volatile unsigned long ch2_last = 0;
+
+volatile unsigned long ch3_start = 0;
+volatile bool ch3_measuring = false;
+volatile int ch3_val = 1000;
+volatile unsigned long ch3_last = 0;
+
+// --- Флаги состояния ---
+bool isGyro = false;
+bool isRotated = false;
+bool lastCh3Active = false;
+double preTurnAngle = 0.0;
+bool systemReady = false;
+
+MPU6050 mpu(Wire);
+Servo esc;
+
+// --- Единый обработчик импульса для всех каналов ---
+static void measurePulse(byte pin, volatile unsigned long &start, volatile bool &measuring,
+                         volatile int &value, volatile unsigned long &last) {
+  unsigned long now = micros();
+  if (digitalRead(pin) == HIGH) {
+    start = now;
+    measuring = true;
+  } else if (measuring) {
+    unsigned long w = now - start;
+    if (w >= PULSE_MIN && w <= PULSE_MAX) {
+      value = (int)w;
+      last = now;
+    }
+    measuring = false;
+  }
+}
+
+void rx_ch1() { measurePulse(CH1_PIN, ch1_start, ch1_measuring, ch1_val, ch1_last); }
+void rx_ch2() { measurePulse(CH2_PIN, ch2_start, ch2_measuring, ch2_val, ch2_last); }
+ISR(PCINT2_vect) { measurePulse(CH3_PIN, ch3_start, ch3_measuring, ch3_val, ch3_last); }
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  Wire.setWireTimeout(3000, true);
+
+  pinMode(CH1_PIN, INPUT);
+  pinMode(CH2_PIN, INPUT);
+  pinMode(CH3_PIN, INPUT);
+
+  randomSeed(analogRead(A0));
+
+  esc.attach(ESC_PIN, 1000, 2000);
+  esc.writeMicroseconds(MOTOR_STOP);
+  delay(2000);
+
+  Serial.println(F("Инициализация MPU6050..."));
+  byte status = mpu.begin();
+  if (status != 0) {
+    Serial.print(F("Ошибка датчика! Статус: "));
+    Serial.println(status);
+    esc.writeMicroseconds(MOTOR_STOP);
+    esc.detach();
+    while (1);
+  }
+
+  Serial.println(F("Калибровка гироскопа. НЕ ВРАЩАЙТЕ ПЛАТФОРМУ..."));
+  delay(1000);
+  mpu.calcOffsets();
+  Serial.println(F("Калибровка завершена!"));
+  delay(500);
+
+  attachInterrupt(digitalPinToInterrupt(CH1_PIN), rx_ch1, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(CH2_PIN), rx_ch2, CHANGE);
+  PCICR  |= (1 << PCIE2);
+  PCMSK2 |= (1 << PCINT20);
+
+  mpu.update();
+  targetAngle = mpu.getAngleZ(); // Поставьте -mpu.getAngleZ(), если датчик перевернут
+  lastAngle = targetAngle;
+
+  lastTime = micros();
+  systemReady = true;
+}
+
+void loop() {
+  if (!systemReady) return;
+
+  // 1. Проверка и восстановление шины I2C при сбое
+  if (Wire.getWireTimeoutFlag()) {
+    Serial.println(F("Сбой I2C! Перезапуск шины..."));
+    Wire.clearWireTimeoutFlag();
+    Wire.begin();
+    Wire.setWireTimeout(3000, true);
+    esc.writeMicroseconds(MOTOR_STOP);
+    lastTime = micros();
+    return;
+  }
+
+  // 2. НЕПРЕРЫВНОЕ обновление угла гироскопа в любом режиме (исключает рывок при включении)
+  mpu.update();
+
+  // 3. FAILSAFE: потеря сигнала по 1-му или 2-му каналу
+  unsigned long nowUs = micros();
+  if (nowUs - ch1_last > FAILSAFE_US || nowUs - ch2_last > FAILSAFE_US) {
+    isGyro = false;
+    isRotated = false;
+    integral = 0;
+    esc.writeMicroseconds(MOTOR_STOP);
+    return;
+  }
+
+  // Чтение актуальных значений каналов
+  int channel1, channel2, channel3;
+  noInterrupts();
+  channel1 = ch1_val;
+  channel2 = ch2_val;
+  // Если 3-й канал пропал, считаем его выключенным (1000)
+  channel3 = (nowUs - ch3_last > FAILSAFE_US) ? 1000 : ch3_val;
+  interrupts();
+
+  // Определение режима работы по 2-му каналу с гистерезисом
+  if (!isGyro && channel2 > GYRO_MODE_ON) {
+    // Момент переключения в режим удержания
+    isGyro = true;
+    isRotated = false;
+    integral = 0;
+    targetAngle = -mpu.getAngleZ(); // Поставьте -mpu.getAngleZ(), если датчик перевернут
+    lastAngle = targetAngle;
+    lastTime = micros();
+    // Запоминаем состояние 3-го канала на момент входа, чтобы избежать ложного срабатывания
+    lastCh3Active = (channel3 > TURN_TRIGGER_ON);
+    Serial.print(F("Стабилизация ВКЛ. Угол фиксации: "));
+    Serial.println(targetAngle);
+  } else if (isGyro && channel2 < GYRO_MODE_OFF) {
+    // Выход из режима удержания в ручной режим
+    isGyro = false;
+    isRotated = false;
+    integral = 0;
+    Serial.println(F("Режим: Ручное управление"));
+  }
+
+  // --- ВЫПОЛНЕНИЕ ТЕКУЩЕГО РЕЖИМА ---
+  if (!isGyro) {
+    // РЕЖИМ 1: Ручное управление (3-й канал здесь полностью игнорируется)
+    int esc_signal;
+    if (channel1 > MANUAL_DEADBAND_LO && channel1 < MANUAL_DEADBAND_HI) {
+      esc_signal = MOTOR_STOP;
+    } else {
+      esc_signal = constrain(channel1, MOTOR_MIN, MOTOR_MAX);
+    }
+    esc.writeMicroseconds(esc_signal);
+
+  } else {
+    // РЕЖИМ 2: Стабилизация + работа 3-го канала (±93°)
+    bool currentCh3Active = (channel3 > TURN_TRIGGER_ON);
+
+    // Поворот на ±93° срабатывает только при переключении 3-го канала в активное состояние
+    if (currentCh3Active && !lastCh3Active && !isRotated) {
+      randomSeed(micros());
+      preTurnAngle = targetAngle;
+      targetAngle = preTurnAngle + ((random(0, 2) == 0) ? -TURN_ANGLE : TURN_ANGLE);
+      isRotated = true;
+      Serial.print(F("Поворот на 93 град. Новая цель: "));
+      Serial.println(targetAngle);
+    } else if (channel3 < TURN_TRIGGER_OFF && isRotated) {
+      targetAngle = preTurnAngle;
+      isRotated = false;
+      Serial.print(F("Возврат к исходному углу: "));
+      Serial.println(targetAngle);
+    }
+    lastCh3Active = currentCh3Active;
+
+    tracking();
+  }
+}
+
+// --- PID-регулятор удержания угла ---
+void tracking() {
+  unsigned long now = micros();
+  double dt = (now - lastTime) / 1000000.0;
+  if (dt < 0.005) return;
+  lastTime = now;
+
+  double currentAngle = -mpu.getAngleZ(); // Поставьте -mpu.getAngleZ(), если датчик перевернут
+  if (isnan(currentAngle) || isinf(currentAngle)) return;
+
+  double error = targetAngle - currentAngle;
+  // Нормализация ошибки в пределах [-180; 180]
+  while (error > 180.0)  error -= 360.0;
+  while (error < -180.0) error += 360.0;
+
+  // Anti-windup
+  if (fabs(error) < INTEGRAL_ZONE) {
+    integral += error * dt;
+    double maxI = INTEGRAL_LIMIT_US / Ki;
+    integral = constrain(integral, -maxI, maxI);
+  } else {
+    integral = 0;
+  }
+
+  // Производная по измерению
+  double dInput = (currentAngle - lastAngle) / dt;
+  lastAngle = currentAngle;
+
+  double output = Kp * error - Kd * dInput + Ki * integral;
+
+  // Компенсация мёртвой зоны ESC
+  if (fabs(error) > 0.5) {
+    if (output > 0) output += ESC_DEADBAND_COMP;
+    else if (output < 0) output -= ESC_DEADBAND_COMP;
+  }
+
+  int pwm = constrain(MOTOR_STOP + (int)output, MOTOR_MIN, MOTOR_MAX);
+  esc.writeMicroseconds(pwm);
+
+  if (millis() - lastSerialTime > 50) {
+    lastSerialTime = millis();
+    Serial.print(F("Target:")); Serial.print(targetAngle); Serial.print(F(" "));
+    Serial.print(F("Current:")); Serial.print(currentAngle); Serial.print(F(" "));
+    Serial.print(F("PWM:")); Serial.println(pwm);
+  }
+}
