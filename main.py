@@ -72,7 +72,7 @@ def change_color_red(number_of_button: int):
         case _:
             pass
 
-    playsound("bung.mp3")
+    # playsound("bung.mp3")
 
 
 def change_color_red_head(number_of_button: int):
@@ -151,12 +151,12 @@ def relay_trigger(number_of_target: int):
                                  # Команда
                                  0,  # confirmation
                                  0,  # param1 (Номер реле)
-                                 1,  # param2 (1 - ON, 0 - OFF)
+                                 1,  # param2 (1 - ON)
                                  0, 0, 0, 0, 0  # Остальные параметры
                                  )
 
     # master.mav.send(command)
-    time.sleep(0.5)
+    time.sleep(1)
     # command = dialect.MAVLink_command_long_message(number_of_target,
     #                                                target_component=master.target_component,
     #                                                command=dialect.MAV_CMD_DO_SET_RELAY,
@@ -174,7 +174,7 @@ def relay_trigger(number_of_target: int):
                                  # Команда
                                  0,  # confirmation
                                  0,  # param1 (Номер реле)
-                                 0,  # param2 (1 - ON, 0 - OFF)
+                                 0,  # param2 (1 - ON)
                                  0, 0, 0, 0, 0  # Остальные параметры
                                  )
 
@@ -190,7 +190,9 @@ def relay_trigger(number_of_target: int):
             mn = 10
         case "Hold":
             mn = 4
-    # перевод в режим MANUAL/AUTO (0- manual, 10 - auto, 4 - Hold)
+        case "Circle":
+            mn = 7
+    # перевод в режим MANUAL/AUTO (0- manual, 10 - auto, 4 - Hold, 7- Circle)
     set_mode(number_of_target, mn)
 
 
@@ -214,11 +216,11 @@ def get_telemetry():
                                 t1.start()
 
                         case 'SHM2':
-                            if time.time() - start_time2 > 4:
+                            if time.time() - start_time2 > 2:
                                 print(f"Мишень №2 поражена")
                                 start_time2 = time.time()
-                                t2 = threading.Timer(7.0, relay_trigger, args=[2])
-                                t2.start()
+                                # t2 = threading.Timer(7.0, relay_trigger, args=[2])
+                                # t2.start()
 
                         case 'SHM3':
                             if time.time() - start_time3 > 4:
@@ -237,7 +239,7 @@ def get_telemetry():
                         case _:
                             print("Что это было?")
 
-                    # Парсим данные от мишени 1-55-1 (номер мишени - количество попаданий - идентификатор места попадапния 1 или 2)
+                    # Парсим данные от мишени 1-55-1
                     res = re.findall(r'\d{1}-\d+-\d{1}', mavtext)
                     if res:
                         print("mavtext=", res[-1])
@@ -255,11 +257,15 @@ def get_telemetry():
                                     change_color_red(1)
 
                             case "2":
+                                print(f"Мишень №2 поражена")
                                 tar2 = int(num_tar)
                                 if zona == "1":
                                     change_color_red_head(2)
                                 if zona == "2":
                                     change_color_red(2)
+
+                                t2 = threading.Timer(1.0, change_color_green, args=[2])
+                                t2.start()
 
                             case "3":
                                 tar3 = int(num_tar)
@@ -327,4 +333,5 @@ form.resetButton3.clicked.connect(lambda: reset_target(3))
 form.resetButton4.clicked.connect(lambda: reset_target(4))
 
 app.exec()
+
 
