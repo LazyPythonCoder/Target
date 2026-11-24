@@ -221,7 +221,7 @@ void loop() {
       currentCh3Active = false;
     }
 
-    // Поворот на ±90° срабатывает только при стабильном включении 3-го канала
+    // Поворот на ±93° срабатывает только при стабильном включении 3-го канала
     if (currentCh3Active && !lastCh3Active && !isRotated) {
       randomSeed(micros());
       preTurnAngle = targetAngle;
