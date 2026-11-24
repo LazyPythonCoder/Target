@@ -9,6 +9,10 @@
 #include <Servo.h>
 #include <MPU6050_light.h>
 
+// --- Настройка ориентации датчика ---
+// Поставьте true, если датчик перевёрнут вверх ногами (на 180°) и мишень раскручивается
+constexpr bool GYRO_INVERTED = false;
+
 // --- Пины ---
 const byte CH1_PIN = 2;  // Канал 1: поворот мишени вокруг оси (ручной режим)
 const byte CH2_PIN = 3;  // Канал 2: тумблер стабилизации (>1500 = вкл)
@@ -76,6 +80,12 @@ bool systemReady = false;
 MPU6050 mpu(Wire);
 Servo esc;
 
+// --- Единая функция чтения угла с учётом переворота датчика ---
+inline double readGyroAngle() {
+  double angle = mpu.getAngleZ();
+  return GYRO_INVERTED ? -angle : angle;
+}
+
 // --- Единый обработчик импульса для всех каналов ---
 static void measurePulse(byte pin, volatile unsigned long &start, volatile bool &measuring,
                          volatile int &value, volatile unsigned long &last) {
@@ -134,7 +144,7 @@ void setup() {
   PCMSK2 |= (1 << PCINT20);
 
   mpu.update();
-  finalTargetAngle = mpu.getAngleZ();
+  finalTargetAngle = readGyroAngle();
   targetAngle = finalTargetAngle;
   lastAngle = targetAngle;
 
@@ -179,7 +189,7 @@ void loop() {
   // Определение режима работы по 2-му каналу с гистерезисом
   if (!isGyro && channel2 > GYRO_MODE_ON) {
     mpu.update();
-    double freshAngle = mpu.getAngleZ();
+    double freshAngle = readGyroAngle();
 
     if (!isnan(freshAngle) && !isinf(freshAngle)) {
       esc.writeMicroseconds(MOTOR_STOP);
@@ -262,7 +272,7 @@ void tracking() {
     targetAngle += (diff > 0 ? maxStep : -maxStep);
   }
 
-  double currentAngle = mpu.getAngleZ();
+  double currentAngle = readGyroAngle();
   if (isnan(currentAngle) || isinf(currentAngle)) return;
 
   double error = targetAngle - currentAngle;
