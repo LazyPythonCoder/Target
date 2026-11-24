@@ -5,7 +5,7 @@
 // --- Пины ---
 const byte CH1_PIN = 2;  // Канал 1: поворот мишени вокруг оси (ручной режим)
 const byte CH2_PIN = 3;  // Канал 2: тумблер стабилизации (>1500 = вкл)
-const byte CH3_PIN = 4;  // Канал 3: триггер поворота на 93 градуса
+const byte CH3_PIN = 4;  // Канал 3: триггер поворота на 90 градусов (работает только при CH2 > 1500)
 const byte ESC_PIN = 9;  // Выход на регулятор двигателя поворота мишени
 
 // --- Диапазоны ---
@@ -15,24 +15,29 @@ const int MOTOR_MAX  = 2000;
 
 constexpr int MANUAL_DEADBAND_LO = 1470;
 constexpr int MANUAL_DEADBAND_HI = 1530;
-constexpr int TURN_TRIGGER_ON  = 1550;  // включение поворота
-constexpr int TURN_TRIGGER_OFF = 1500;  // возврат к исходному углу
+constexpr int GYRO_MODE_ON       = 1520; // порог включения стабилизации (с гистерезисом)
+constexpr int GYRO_MODE_OFF      = 1480; // порог выключения стабилизации
+constexpr int TURN_TRIGGER_ON    = 1550; // включение поворота на 90°
+constexpr int TURN_TRIGGER_OFF   = 1500; // возврат к исходному углу
 constexpr int PULSE_MIN = 800;
 constexpr int PULSE_MAX = 2200;
 
-constexpr unsigned long FAILSAFE_US = 250000UL; // 250 мс без сигнала = стоп
-constexpr float TURN_ANGLE = 93.0f;
-constexpr float INTEGRAL_ZONE = 15.0f;      // зона работы интеграла, град
-constexpr float INTEGRAL_LIMIT_US = 150.0f; // предел вклада I, мкс
+constexpr unsigned long FAILSAFE_US = 250000UL;   // 250 мс без сигнала = стоп
+constexpr unsigned long CH3_DEBOUNCE_MS = 50UL;   // защита от помех 3-го канала (50 мс)
+constexpr float TURN_ANGLE = 90.0f;
+constexpr double TURN_SPEED = 70.0;               // скорость поворота (град/сек) -> 90° за ~1.3 сек
+constexpr float INTEGRAL_ZONE = 15.0f;            // зона работы интеграла, град
+constexpr float INTEGRAL_LIMIT_US = 150.0f;       // предел вклада I, мкс
 constexpr int ESC_DEADBAND_COMP = 30;
 
 // --- PID ---
 double Kp = 3.5;
 double Ki = 0.5;
-double Kd = 0.1;
+double Kd = 0.9; // Увеличено для гашения инерции 15 кг
 
 double targetAngle = 0.0;
-double lastAngle = 0.0;      // для производной по измерению
+double finalTargetAngle = 0.0;
+double lastAngle = 0.0;
 double integral = 0.0;
 unsigned long lastTime = 0;
 unsigned long lastSerialTime = 0;
@@ -45,7 +50,7 @@ volatile unsigned long ch1_last = 0;
 
 volatile unsigned long ch2_start = 0;
 volatile bool ch2_measuring = false;
-volatile int ch2_val = 1000; // по умолчанию — ручной режим (безопасно)
+volatile int ch2_val = 1000;
 volatile unsigned long ch2_last = 0;
 
 volatile unsigned long ch3_start = 0;
@@ -53,8 +58,11 @@ volatile bool ch3_measuring = false;
 volatile int ch3_val = 1000;
 volatile unsigned long ch3_last = 0;
 
+// --- Флаги состояния ---
 bool isGyro = false;
 bool isRotated = false;
+bool lastCh3Active = false;
+unsigned long ch3ActiveSince = 0;
 double preTurnAngle = 0.0;
 bool systemReady = false;
 
@@ -68,8 +76,8 @@ static void measurePulse(byte pin, volatile unsigned long &start, volatile bool 
   if (digitalRead(pin) == HIGH) {
     start = now;
     measuring = true;
-  } else if (measuring) {          // флаг вместо проверки start > 0 —
-    unsigned long w = now - start; // не теряем импульс при переполнении micros()
+  } else if (measuring) {
+    unsigned long w = now - start;
     if (w >= PULSE_MIN && w <= PULSE_MAX) {
       value = (int)w;
       last = now;
@@ -102,7 +110,7 @@ void setup() {
   if (status != 0) {
     Serial.print(F("Ошибка датчика! Статус: "));
     Serial.println(status);
-    esc.writeMicroseconds(MOTOR_STOP); // явно гасим мотор перед остановкой
+    esc.writeMicroseconds(MOTOR_STOP);
     esc.detach();
     while (1);
   }
@@ -119,7 +127,8 @@ void setup() {
   PCMSK2 |= (1 << PCINT20);
 
   mpu.update();
-  targetAngle = mpu.getAngleZ(); // targetAngle = -mpu.getAngleZ() Если перевернуть гироскоп по оси Х
+  finalTargetAngle = mpu.getAngleZ();
+  targetAngle = finalTargetAngle;
   lastAngle = targetAngle;
 
   lastTime = micros();
@@ -129,9 +138,22 @@ void setup() {
 void loop() {
   if (!systemReady) return;
 
-  // FAILSAFE: нет свежих импульсов хотя бы по одному из каналов 1/2 — стоп
+  // 1. Проверка и восстановление шины I2C при сбое
+  if (Wire.getWireTimeoutFlag()) {
+    Wire.clearWireTimeoutFlag();
+    Wire.begin();
+    Wire.setWireTimeout(3000, true);
+    esc.writeMicroseconds(MOTOR_STOP);
+    lastTime = micros();
+    return;
+  }
+
+  // 2. НЕПРЕРЫВНОЕ обновление угла гироскопа в любом режиме
+  mpu.update();
+
+  // 3. FAILSAFE: потеря сигнала по 1-му или 2-му каналу
   unsigned long nowUs = micros();
-  if (nowUs - ch1_last > FAILSAFE_US && nowUs - ch2_last > FAILSAFE_US) {
+  if (nowUs - ch1_last > FAILSAFE_US || nowUs - ch2_last > FAILSAFE_US) {
     isGyro = false;
     isRotated = false;
     integral = 0;
@@ -139,21 +161,41 @@ void loop() {
     return;
   }
 
+  // Чтение актуальных значений каналов
   int channel1, channel2, channel3;
   noInterrupts();
   channel1 = ch1_val;
   channel2 = ch2_val;
-  channel3 = ch3_val;
+  channel3 = (nowUs - ch3_last > FAILSAFE_US) ? 1000 : ch3_val;
   interrupts();
 
-  // РЕЖИМ 1: ручной (тумблер выключен) — канал 1 крутит мишень
-  if (channel2 < 1500) {
-    if (isGyro) {
-      isGyro = false;
+  // Определение режима работы по 2-му каналу с гистерезисом
+  if (!isGyro && channel2 > GYRO_MODE_ON) {
+    mpu.update();
+    double freshAngle = mpu.getAngleZ();
+
+    if (!isnan(freshAngle) && !isinf(freshAngle)) {
+      esc.writeMicroseconds(MOTOR_STOP);
+      isGyro = true;
       isRotated = false;
       integral = 0;
-      Serial.println(F("Режим: Ручное управление"));
+      finalTargetAngle = freshAngle;
+      targetAngle = freshAngle;
+      lastAngle = freshAngle;
+      lastTime = micros() - 6000;
+      lastCh3Active = (channel3 > TURN_TRIGGER_OFF);
+      ch3ActiveSince = 0;
     }
+  } else if (isGyro && channel2 < GYRO_MODE_OFF) {
+    isGyro = false;
+    isRotated = false;
+    integral = 0;
+    ch3ActiveSince = 0;
+  }
+
+  // --- ВЫПОЛНЕНИЕ ТЕКУЩЕГО РЕЖИМА ---
+  if (!isGyro) {
+    // РЕЖИМ 1: Ручное управление
     int esc_signal;
     if (channel1 > MANUAL_DEADBAND_LO && channel1 < MANUAL_DEADBAND_HI) {
       esc_signal = MOTOR_STOP;
@@ -162,67 +204,66 @@ void loop() {
     }
     esc.writeMicroseconds(esc_signal);
 
-  // РЕЖИМ 2: стабилизация (тумблер включен) — канал 1 игнорируется
   } else {
-    if (!isGyro) {
-      Serial.println(F("Режим: Стабилизация включена"));
-      if (Wire.getWireTimeoutFlag()) Wire.clearWireTimeoutFlag();
-      mpu.update();
-      targetAngle = mpu.getAngleZ();
-      lastAngle = targetAngle;
-      lastTime = micros();
-      isGyro = true;
-      isRotated = false;
-      integral = 0;
+    // РЕЖИМ 2: Стабилизация + работа 3-го канала (±90°) с антидребезгом
+    bool rawCh3High = (channel3 > TURN_TRIGGER_ON);
+    bool currentCh3Active = false;
+
+    if (rawCh3High) {
+      if (ch3ActiveSince == 0) {
+        ch3ActiveSince = millis();
+      } else if (millis() - ch3ActiveSince >= CH3_DEBOUNCE_MS) {
+        currentCh3Active = true;
+      }
+    } else {
+      ch3ActiveSince = 0;
+      currentCh3Active = false;
     }
 
-    if (channel3 > TURN_TRIGGER_ON) {
-      if (!isRotated) {
-        preTurnAngle = targetAngle;
-        targetAngle = preTurnAngle + ((random(0, 2) == 0) ? -TURN_ANGLE : TURN_ANGLE);
-        isRotated = true;
-        Serial.print(F("Случайный поворот на 93 градуса. Новая цель: "));
-        Serial.println(targetAngle);
-      }
-    } else if (channel3 < TURN_TRIGGER_OFF) {
-      if (isRotated) {
-        targetAngle = preTurnAngle;
-        isRotated = false;
-        Serial.print(F("Возврат к исходному углу: "));
-        Serial.println(targetAngle);
-      }
+    // Поворот на ±90° срабатывает только при стабильном включении 3-го канала
+    if (currentCh3Active && !lastCh3Active && !isRotated) {
+      randomSeed(micros());
+      preTurnAngle = finalTargetAngle;
+      finalTargetAngle = preTurnAngle + ((random(0, 2) == 0) ? -TURN_ANGLE : TURN_ANGLE);
+      isRotated = true;
+    } else if (channel3 < TURN_TRIGGER_OFF && isRotated) {
+      finalTargetAngle = preTurnAngle;
+      isRotated = false;
     }
+    lastCh3Active = currentCh3Active;
 
     tracking();
   }
 }
 
-// --- PID удержания угла (канал 1 сюда не входит — так и задумано) ---
+// --- PID-регулятор удержания угла ---
 void tracking() {
-  if (Wire.getWireTimeoutFlag()) {
-    Serial.println(F("Сбой I2C! Мягкий перезапуск шины..."));
-    Wire.clearWireTimeoutFlag();
-    Wire.begin();
-    esc.writeMicroseconds(MOTOR_STOP);
-    lastTime = micros(); // чтобы dt не скакнул на следующем цикле
-    return;
-  }
-
-  mpu.update();
   unsigned long now = micros();
   double dt = (now - lastTime) / 1000000.0;
   if (dt < 0.005) return;
   lastTime = now;
 
-  double currentAngle = mpu.getAngleZ(); // double currentAngle = -mpu.getAngleZ(); Если перевернуть по оси X
+  // Плавное перемещение текущего целевого угла к конечному
+  double diff = finalTargetAngle - targetAngle;
+  while (diff > 180.0)  diff -= 360.0;
+  while (diff < -180.0) diff += 360.0;
+
+  double maxStep = TURN_SPEED * dt;
+  if (fabs(diff) <= maxStep) {
+    targetAngle = finalTargetAngle;
+  } else {
+    targetAngle += (diff > 0 ? maxStep : -maxStep);
+  }
+
+  double currentAngle = mpu.getAngleZ();
   if (isnan(currentAngle) || isinf(currentAngle)) return;
 
   double error = targetAngle - currentAngle;
-  // Нормализация по кругу: ошибка всегда в [-180; 180]
+  // Нормализация ошибки в пределах [-180; 180]
   while (error > 180.0)  error -= 360.0;
   while (error < -180.0) error += 360.0;
 
-  // Anti-windup: интеграл только в зоне точного доворота
+  // Anti-windup
   if (fabs(error) < INTEGRAL_ZONE) {
     integral += error * dt;
     double maxI = INTEGRAL_LIMIT_US / Ki;
@@ -231,7 +272,7 @@ void tracking() {
     integral = 0;
   }
 
-  // Производная по ИЗМЕРЕНИЮ: скачок цели на 93° не даёт пика
+  // Производная по измерению
   double dInput = (currentAngle - lastAngle) / dt;
   lastAngle = currentAngle;
 
