@@ -24,7 +24,7 @@ constexpr int PULSE_MAX = 2200;
 
 constexpr unsigned long FAILSAFE_US = 250000UL;   // 250 мс без сигнала = стоп
 constexpr unsigned long CH3_DEBOUNCE_MS = 50UL;   // защита от помех 3-го канала (50 мс)
-constexpr float TURN_ANGLE = 93.0f;
+constexpr float TURN_ANGLE = 90.0f;
 constexpr float INTEGRAL_ZONE = 15.0f;            // зона работы интеграла, град
 constexpr float INTEGRAL_LIMIT_US = 150.0f;       // предел вклада I, мкс
 constexpr int ESC_DEADBAND_COMP = 30;
@@ -125,7 +125,7 @@ void setup() {
   PCMSK2 |= (1 << PCINT20);
 
   mpu.update();
-  targetAngle = -mpu.getAngleZ(); // Поставьте mpu.getAngleZ(), если датчик не перевернут
+  targetAngle = mpu.getAngleZ(); // Поставьте mpu.getAngleZ(), если датчик не перевернут
   lastAngle = targetAngle;
 
   lastTime = micros();
@@ -170,7 +170,7 @@ void loop() {
   if (!isGyro && channel2 > GYRO_MODE_ON) {
     // Свежее чтение угла перед фиксацией цели
     mpu.update();
-    double freshAngle = -mpu.getAngleZ();
+    double freshAngle = mpu.getAngleZ();
 
     // Защита от фиксации битого значения при помехе на I2C
     if (!isnan(freshAngle) && !isinf(freshAngle)) {
@@ -206,7 +206,7 @@ void loop() {
     esc.writeMicroseconds(esc_signal);
 
   } else {
-    // РЕЖИМ 2: Стабилизация + работа 3-го канала (±93°) с антидребезгом
+    // РЕЖИМ 2: Стабилизация + работа 3-го канала (±90°) с антидребезгом
     bool rawCh3High = (channel3 > TURN_TRIGGER_ON);
     bool currentCh3Active = false;
 
@@ -221,7 +221,7 @@ void loop() {
       currentCh3Active = false;
     }
 
-    // Поворот на ±93° срабатывает только при стабильном включении 3-го канала
+    // Поворот на ±90° срабатывает только при стабильном включении 3-го канала
     if (currentCh3Active && !lastCh3Active && !isRotated) {
       randomSeed(micros());
       preTurnAngle = targetAngle;
@@ -244,7 +244,7 @@ void tracking() {
   if (dt < 0.005) return;
   lastTime = now;
 
-  double currentAngle = -mpu.getAngleZ(); // Поставьте mpu.getAngleZ(), если датчик не перевернут
+  double currentAngle = mpu.getAngleZ(); // Поставьте mpu.getAngleZ(), если датчик не перевернут
   if (isnan(currentAngle) || isinf(currentAngle)) return;
 
   double error = targetAngle - currentAngle;
