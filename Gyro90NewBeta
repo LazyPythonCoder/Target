@@ -1,0 +1,315 @@
+
+//1. Как ускорить доводку последних 2–3 градусов
+
+//На малых углах (2–3°) пропорциональная часть Kp * error становится очень слабой (5.0 * 2° = 10 мкс), а трение в редукторе и токосъемнике у 15-килограммовой мишени большое. Вся работа ложится на ESC_DEADBAND_COMP и интеграл Ki.
+//• Увеличьте ESC_DEADBAND_COMP с 30 до 45–50: это главный параметр, который дает мотору «пинок» для преодоления трения покоя вплоть до попадания в зону остановки POSITION_TOLERANCE.
+//• Увеличьте Ki с 0.5 до 0.8–1.0: интегратор будет быстрее накапливать усилие на последних градусах, чтобы дожать мишень до 1.2° и включить тормоз ESC.
+//• (Опционально) Если точность в 1.2° избыточна, можно расширить POSITION_TOLERANCE до 1.5° — тогда тормоз будет схватывать чуть раньше, и затянутой доводки вообще не будет видно глазом.
+
+//2. Как повысить скорость поворота на ±90°
+
+//За темп поворота отвечает одна константа TURN_SPEED (сейчас стоит 100.0 град/сек).
+//• Увеличьте TURN_SPEED до 130.0–150.0: при 140.0 разворот на 90° будет занимать около 0.8–0.9 секунды вместо текущих ~1.3 сек.
+//• Следите только за тем, чтобы при резкой остановке после быстрого поворота мишень не проскакивала цель (если появится небольшой перелет, добавьте Kd с 0.85 до 0.95).
+
+
+#include <Wire.h>
+#include <Servo.h>
+#include <MPU6050_light.h>
+
+// --- Настройка ориентации датчика ---
+constexpr bool GYRO_INVERTED = false;
+
+// --- Пины ---
+const byte CH1_PIN = 2;  // Канал 1: поворот мишени вокруг оси (ручной режим)
+const byte CH2_PIN = 3;  // Канал 2: тумблер стабилизации (>1500 = вкл)
+const byte CH3_PIN = 4;  // Канал 3: триггер поворота на 90° (только при CH2 > 1500)
+const byte ESC_PIN = 9;  // Выход на реверсивный ESC
+
+// --- Диапазоны PWM ---
+const int MOTOR_STOP = 1500;
+const int MOTOR_MIN  = 1000;
+const int MOTOR_MAX  = 2000;
+
+constexpr int MANUAL_DEADBAND_LO = 1470;
+constexpr int MANUAL_DEADBAND_HI = 1530;
+constexpr int GYRO_MODE_ON       = 1520;
+constexpr int GYRO_MODE_OFF      = 1480;
+constexpr int TURN_TRIGGER_ON    = 1550;
+constexpr int TURN_TRIGGER_OFF   = 1500;
+constexpr int PULSE_MIN          = 800;
+constexpr int PULSE_MAX          = 2200;
+
+// --- Параметры движения и защиты ---
+constexpr unsigned long FAILSAFE_US      = 250000UL; // 250 мс без сигнала = стоп
+constexpr unsigned long CH3_DEBOUNCE_MS  = 50UL;     // антидребезг 3-го канала
+constexpr float TURN_ANGLE               = 90.0f;
+constexpr double TURN_SPEED              = 140.0;    // скорость поворота (град/сек) -> ~0.85 сек на 90°
+constexpr float POSITION_TOLERANCE       = 1.2f;     // зона срабатывания тормоза ESC (град)
+constexpr float INTEGRAL_ZONE            = 15.0f;    // зона работы интеграла (град)
+constexpr float INTEGRAL_LIMIT_US        = 150.0f;   // предел вклада I (мкс)
+constexpr int ESC_DEADBAND_COMP          = 48;       // компенсация мертвой зоны для быстрой доводки
+
+// --- Коэффициенты PID ---
+double Kp = 5.0;
+double Ki = 0.8;  // Увеличено для уверенного дожима последних 2-3°
+double Kd = 0.85;
+
+double targetAngle      = 0.0;
+double finalTargetAngle = 0.0;
+double lastAngle        = 0.0;
+double integral         = 0.0;
+unsigned long lastTime  = 0;
+
+// --- Каналы приёмника ---
+volatile unsigned long ch1_start = 0;
+volatile bool ch1_measuring = false;
+volatile int ch1_val = MOTOR_STOP;
+volatile unsigned long ch1_last = 0;
+
+volatile unsigned long ch2_start = 0;
+volatile bool ch2_measuring = false;
+volatile int ch2_val = 1000;
+volatile unsigned long ch2_last = 0;
+
+volatile unsigned long ch3_start = 0;
+volatile bool ch3_measuring = false;
+volatile int ch3_val = 1000;
+volatile unsigned long ch3_last = 0;
+
+// --- Флаги состояния ---
+bool isGyro        = false;
+bool isRotated     = false;
+bool lastCh3Active = false;
+unsigned long ch3ActiveSince = 0;
+double preTurnAngle = 0.0;
+bool systemReady    = false;
+
+MPU6050 mpu(Wire);
+Servo esc;
+
+// --- Нормализация любого угла/разницы в диапазон [-180; 180] ---
+inline double normalizeAngle(double angle) {
+  while (angle > 180.0)  angle -= 360.0;
+  while (angle < -180.0) angle += 360.0;
+  return angle;
+}
+
+// --- Чтение угла с учётом переворота датчика ---
+inline double readGyroAngle() {
+  double angle = mpu.getAngleZ();
+  return GYRO_INVERTED ? -angle : angle;
+}
+
+// --- Обработчик импульсов приёмника ---
+static void measurePulse(byte pin, volatile unsigned long &start, volatile bool &measuring,
+                         volatile int &value, volatile unsigned long &last) {
+  unsigned long now = micros();
+  if (digitalRead(pin) == HIGH) {
+    start = now;
+    measuring = true;
+  } else if (measuring) {
+    unsigned long w = now - start;
+    if (w >= PULSE_MIN && w <= PULSE_MAX) {
+      value = (int)w;
+      last = now;
+    }
+    measuring = false;
+  }
+}
+
+void rx_ch1() { measurePulse(CH1_PIN, ch1_start, ch1_measuring, ch1_val, ch1_last); }
+void rx_ch2() { measurePulse(CH2_PIN, ch2_start, ch2_measuring, ch2_val, ch2_last); }
+ISR(PCINT2_vect) { measurePulse(CH3_PIN, ch3_start, ch3_measuring, ch3_val, ch3_last); }
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+  Wire.setWireTimeout(3000, true);
+
+  pinMode(CH1_PIN, INPUT);
+  pinMode(CH2_PIN, INPUT);
+  pinMode(CH3_PIN, INPUT);
+
+  esc.attach(ESC_PIN, 1000, 2000);
+  esc.writeMicroseconds(MOTOR_STOP);
+  delay(2000); // Пауза для инициализации ESC в нейтрали
+
+  byte status = mpu.begin();
+  if (status != 0) {
+    esc.writeMicroseconds(MOTOR_STOP);
+    esc.detach();
+    while (1);
+  }
+
+  delay(1000);
+  mpu.calcOffsets(); // Калибровка нуля (платформа должна стоять неподвижно)
+  delay(500);
+
+  attachInterrupt(digitalPinToInterrupt(CH1_PIN), rx_ch1, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(CH2_PIN), rx_ch2, CHANGE);
+  PCICR  |= (1 << PCIE2);
+  PCMSK2 |= (1 << PCINT20);
+
+  mpu.update();
+  finalTargetAngle = readGyroAngle();
+  targetAngle      = finalTargetAngle;
+  lastAngle        = targetAngle;
+
+  lastTime = micros();
+  systemReady = true;
+}
+
+void loop() {
+  if (!systemReady) return;
+
+  // 1. Восстановление I2C при помехах от мотора
+  if (Wire.getWireTimeoutFlag()) {
+    Wire.clearWireTimeoutFlag();
+    Wire.begin();
+    Wire.setWireTimeout(3000, true);
+    esc.writeMicroseconds(MOTOR_STOP);
+    lastTime = micros();
+    return;
+  }
+
+  // 2. Постоянный опрос гироскопа
+  mpu.update();
+
+  // 3. Failsafe по 1 и 2 каналам
+  unsigned long nowUs = micros();
+  if (nowUs - ch1_last > FAILSAFE_US || nowUs - ch2_last > FAILSAFE_US) {
+    isGyro = false;
+    isRotated = false;
+    integral = 0;
+    esc.writeMicroseconds(MOTOR_STOP);
+    return;
+  }
+
+  // Безопасное чтение значений каналов
+  int channel1, channel2, channel3;
+  noInterrupts();
+  channel1 = ch1_val;
+  channel2 = ch2_val;
+  channel3 = (nowUs - ch3_last > FAILSAFE_US) ? 1000 : ch3_val;
+  interrupts();
+
+  // Переключение режимов по 2-му каналу с гистерезисом
+  if (!isGyro && channel2 > GYRO_MODE_ON) {
+    mpu.update();
+    double freshAngle = readGyroAngle();
+
+    if (!isnan(freshAngle) && !isinf(freshAngle)) {
+      esc.writeMicroseconds(MOTOR_STOP);
+      isGyro = true;
+      isRotated = false;
+      integral = 0;
+      finalTargetAngle = freshAngle;
+      targetAngle = freshAngle;
+      lastAngle = freshAngle;
+      lastTime = micros() - 6000;
+      lastCh3Active = (channel3 > TURN_TRIGGER_OFF);
+      ch3ActiveSince = 0;
+    }
+  } else if (isGyro && channel2 < GYRO_MODE_OFF) {
+    isGyro = false;
+    isRotated = false;
+    integral = 0;
+    ch3ActiveSince = 0;
+  }
+
+  // --- ВЫПОЛНЕНИЕ ТЕКУЩЕГО РЕЖИМА ---
+  if (!isGyro) {
+    // РЕЖИМ 1: Ручное управление (в нейтрали срабатывает тормоз ESC)
+    int esc_signal;
+    if (channel1 > MANUAL_DEADBAND_LO && channel1 < MANUAL_DEADBAND_HI) {
+      esc_signal = MOTOR_STOP;
+    } else {
+      esc_signal = constrain(channel1, MOTOR_MIN, MOTOR_MAX);
+    }
+    esc.writeMicroseconds(esc_signal);
+
+  } else {
+    // РЕЖИМ 2: Стабилизация + поворот на ±90° по 3-му каналу
+    bool rawCh3High = (channel3 > TURN_TRIGGER_ON);
+    bool currentCh3Active = false;
+
+    if (rawCh3High) {
+      if (ch3ActiveSince == 0) {
+        ch3ActiveSince = millis();
+      } else if (millis() - ch3ActiveSince >= CH3_DEBOUNCE_MS) {
+        currentCh3Active = true;
+      }
+    } else {
+      ch3ActiveSince = 0;
+      currentCh3Active = false;
+    }
+
+    if (currentCh3Active && !lastCh3Active && !isRotated) {
+      randomSeed(micros());
+      preTurnAngle = finalTargetAngle;
+      finalTargetAngle = preTurnAngle + ((random(0, 2) == 0) ? -TURN_ANGLE : TURN_ANGLE);
+      isRotated = true;
+    } else if (channel3 < TURN_TRIGGER_OFF && isRotated) {
+      finalTargetAngle = preTurnAngle;
+      isRotated = false;
+    }
+    lastCh3Active = currentCh3Active;
+
+    tracking();
+  }
+}
+
+// --- PID-регулятор удержания угла ---
+void tracking() {
+  unsigned long now = micros();
+  double dt = (now - lastTime) / 1000000.0;
+  if (dt < 0.005) return; // Частота цикла не выше 200 Гц
+  lastTime = now;
+
+  // Плавное изменение целевого угла (ограничение угловой скорости)
+  double diff = normalizeAngle(finalTargetAngle - targetAngle);
+  double maxStep = TURN_SPEED * dt;
+
+  if (fabs(diff) <= maxStep) {
+    targetAngle = finalTargetAngle;
+  } else {
+    targetAngle += (diff > 0 ? maxStep : -maxStep);
+  }
+
+  double currentAngle = readGyroAngle();
+  if (isnan(currentAngle) || isinf(currentAngle)) return;
+
+  // Ошибка по кратчайшему пути [-180; 180]
+  double error = normalizeAngle(targetAngle - currentAngle);
+
+  // Интегральная составляющая с защитой от насыщения
+  if (fabs(error) < INTEGRAL_ZONE && fabs(error) > POSITION_TOLERANCE) {
+    integral += error * dt;
+    double maxI = INTEGRAL_LIMIT_US / Ki;
+    integral = constrain(integral, -maxI, maxI);
+  } else if (fabs(error) >= INTEGRAL_ZONE) {
+    integral = 0;
+  }
+
+  // Производная по измерению с защитой от скачка через ±180°
+  double deltaAngle = normalizeAngle(currentAngle - lastAngle);
+  double dInput = deltaAngle / dt;
+  lastAngle = currentAngle;
+
+  double output = Kp * error - Kd * dInput + Ki * integral;
+
+  // Активация тормоза ESC при попадании в допуск или компенсация мертвой зоны
+  int pwm = MOTOR_STOP;
+  if (fabs(error) > POSITION_TOLERANCE) {
+    if (output > 0) output += ESC_DEADBAND_COMP;
+    else if (output < 0) output -= ESC_DEADBAND_COMP;
+    pwm = constrain(MOTOR_STOP + (int)output, MOTOR_MIN, MOTOR_MAX);
+  } else {
+    // Мишень в нужной точке — подаем нейтраль, чтобы ESC включил тормоз
+    pwm = MOTOR_STOP;
+  }
+
+  esc.writeMicroseconds(pwm);
+}
+
