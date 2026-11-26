@@ -36,13 +36,13 @@ constexpr int PULSE_MAX = 2200;
 constexpr unsigned long FAILSAFE_US = 250000UL;   // 250 мс без сигнала = стоп
 constexpr unsigned long CH3_DEBOUNCE_MS = 50UL;   // защита от помех 3-го канала (50 мс)
 constexpr float TURN_ANGLE = 90.0f;
-constexpr double TURN_SPEED = 70.0;               // скорость поворота (град/сек) -> 90° за ~1.3 сек
+constexpr double TURN_SPEED = 100.0;               // скорость поворота (град/сек) -> 90° за ~1.3 сек
 constexpr float INTEGRAL_ZONE = 15.0f;            // зона работы интеграла, град
 constexpr float INTEGRAL_LIMIT_US = 150.0f;       // предел вклада I, мкс
 constexpr int ESC_DEADBAND_COMP = 30;
 
 // --- PID ---
-double Kp = 3.5;
+double Kp = 5;
 double Ki = 0.5;
 double Kd = 0.9; // Увеличено для гашения инерции 15 кг
 
